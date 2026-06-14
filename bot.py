@@ -20,51 +20,39 @@ print("[BOOT] Avvio bot.py")
 print("[PATCH FINAL] Nessuna query WHERE players.id::text = parametro numerico; uso CAST(%s AS BIGINT)")
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = os.getenv("GUILD_ID")
+GUILD_ID = os.getenv("GUILD_ID", "1392747701308751943")
+AUCTION_CHANNEL_ID = os.getenv("AUCTION_CHANNEL_ID", "1504825224422756463")
+AUCTION_LOG_CHANNEL_ID = os.getenv("AUCTION_LOG_CHANNEL_ID", "1504830394908803142")
+ADMIN_ROLE_ID = os.getenv("ADMIN_ROLE_ID", "1398342848436240434")
+SEARCH_CHANNEL_ID = os.getenv("SEARCH_CHANNEL_ID", "1514358654596419814")
+SPAM_CHANNEL_ID = "1504846794142781480"
+ROSE_CHANNEL_ID = "1514358655938592948"
+SCAMBI_CHANNEL_ID = "1504847601361616996"
+REQUEST_ROLE_ID = "1398323695558332604"
+PRE_ISCRITTO_ROLE_ID = "1398323859056365599"
 
-# === CANALI FC26 - BORDO CAMPO ===
-SIGNUP_REQUEST_CHANNEL_ID = os.getenv("SIGNUP_REQUEST_CHANNEL_ID", "1514358617682346289")
-SIGNUP_STAFF_CHANNEL_ID = os.getenv("SIGNUP_STAFF_CHANNEL_ID", "1514633852226896002")
-SIGNUP_REJECT_CHANNEL_ID = os.getenv("SIGNUP_REJECT_CHANNEL_ID", "1514358617682346289")
-SIGNUP_ACCEPT_CHANNEL_ID = os.getenv("SIGNUP_ACCEPT_CHANNEL_ID", "1514358617682346289")
-
-AUCTION_CHANNEL_ID = os.getenv("AUCTION_CHANNEL_ID", "1514358651115278436")
-AUCTION_LOG_CHANNEL_ID = os.getenv("AUCTION_LOG_CHANNEL_ID", "1514358657133969468")
-SCAMBI_CHANNEL_ID = os.getenv("SCAMBI_CHANNEL_ID", "1514358653254107136")
-RESULTS_CHANNEL_ID = os.getenv("RESULTS_CHANNEL_ID", "1514358659470069991")
-STANDINGS_CHANNEL_ID = os.getenv("STANDINGS_CHANNEL_ID", "1514358660598464586")
-STATS_CHANNEL_ID = os.getenv("STATS_CHANNEL_ID", "1514358662020468987")
-MEDIA_CHANNEL_ID = os.getenv("MEDIA_CHANNEL_ID", "1514358663249137855")
-
-# Canali opzionali: se non hai un canale dedicato, lasciali uguali a iscrizioni/media oppure impostali da Railway.
-SEARCH_CHANNEL_ID = os.getenv("SEARCH_CHANNEL_ID", SIGNUP_REQUEST_CHANNEL_ID)
-SPAM_CHANNEL_ID = os.getenv("SPAM_CHANNEL_ID", SIGNUP_REQUEST_CHANNEL_ID)
-ROSE_CHANNEL_ID = os.getenv("ROSE_CHANNEL_ID", MEDIA_CHANNEL_ID)
-CALENDAR_CHANNEL_ID = os.getenv("CALENDAR_CHANNEL_ID", RESULTS_CHANNEL_ID)
-PLAYER_REPORT_CHANNEL_ID = os.getenv("PLAYER_REPORT_CHANNEL_ID", MEDIA_CHANNEL_ID)
-STAFF_LOG_CHANNEL_ID = int(os.getenv("STAFF_LOG_CHANNEL_ID", SIGNUP_STAFF_CHANNEL_ID))
-BACKUP_NOTIFICATION_CHANNEL_ID = int(os.getenv("BACKUP_NOTIFICATION_CHANNEL_ID", SIGNUP_STAFF_CHANNEL_ID))
-INACTIVITY_CHANNEL_ID = int(os.getenv("INACTIVITY_CHANNEL_ID", SIGNUP_STAFF_CHANNEL_ID))
-
-# === RUOLI FC26 - BORDO CAMPO ===
-PRE_ISCRITTO_ROLE_ID = os.getenv("PRE_ISCRITTO_ROLE_ID", "1514358448865935572")
-LEAGUE_PLAYER_ROLE_ID = os.getenv("LEAGUE_PLAYER_ROLE_ID", "1514358442431877324")
-REQUEST_ROLE_ID = os.getenv("REQUEST_ROLE_ID", PRE_ISCRITTO_ROLE_ID)
-ADMIN_ROLE_ID = os.getenv("ADMIN_ROLE_ID", "1514358410441654474")
-LEAGUE_ADMIN_ROLE_ID = os.getenv("LEAGUE_ADMIN_ROLE_ID", "1514358410441654474")
-OWNER_STAFF_ROLE_ID = os.getenv("OWNER_STAFF_ROLE_ID", "1514358410441654474")
-LIMITED_STAFF_ROLE_ID = os.getenv("LIMITED_STAFF_ROLE_ID", "1498341567105339492")
+RESULTS_CHANNEL_ID = "1514358659470069991"
+STANDINGS_CHANNEL_ID = "1514358660598464586"
+STATS_CHANNEL_ID = "1514358662020468987"
+CALENDAR_CHANNEL_ID = "1514358657989611591"
+AGREEMENTS_CHANNEL_ID = "1515743432340148454"  # accordi partite
+LEAGUE_PLAYER_ROLE_ID = "1398332847655358554"
+LEAGUE_ADMIN_ROLE_ID = "1398342848436240434"
 
 # === FC26 ISCRIZIONI AUTOMATICHE ===
-SIGNUP_PENDING_ROLE_ID = PRE_ISCRITTO_ROLE_ID
-SIGNUP_REGISTERED_ROLE_ID = LEAGUE_PLAYER_ROLE_ID
-
-def _env_id_set(name, fallback):
-    raw = os.getenv(name, fallback)
-    return {x.strip() for x in raw.replace(';', ',').split(',') if x.strip()}
+SIGNUP_REQUEST_CHANNEL_ID = os.getenv("SIGNUP_REQUEST_CHANNEL_ID", "1504868857624399872")   # RICHIESTE ISCRIZIONI
+SIGNUP_STAFF_CHANNEL_ID = os.getenv("SIGNUP_STAFF_CHANNEL_ID", "1506320879015952535")     # LOG ISCRIZIONI / staff richieste
+SIGNUP_REJECT_CHANNEL_ID = os.getenv("SIGNUP_REJECT_CHANNEL_ID", "1506320840168308911")    # CANALE ISCRIZIONI RIFIUTATE
+SIGNUP_ACCEPT_CHANNEL_ID = os.getenv("SIGNUP_ACCEPT_CHANNEL_ID", "1506320769964183742")    # CANALE ISCRIZIONI ACCETTATE
+MEDIA_CHANNEL_ID = "1506321171493163199"
+SIGNUP_PENDING_ROLE_ID = PRE_ISCRITTO_ROLE_ID        # 1505180973208440954
+SIGNUP_REGISTERED_ROLE_ID = LEAGUE_PLAYER_ROLE_ID    # 1505181066695016619
 
 # Ruoli autorizzati a gestire ACCETTA/RIFIUTA e assegnazione club
-SIGNUP_STAFF_ROLE_IDS = _env_id_set("SIGNUP_STAFF_ROLE_IDS", "1514358410441654474,1498341567105339492")
+SIGNUP_STAFF_ROLE_IDS = {
+    "1398342848436240434",
+    "1398358193197027408",
+}
 
 # Club e campionati NON sono più hardcoded nel file.
 # Il database Supabase/PostgreSQL è la fonte principale dei dati.
@@ -73,9 +61,12 @@ SIGNUP_STAFF_ROLE_IDS = _env_id_set("SIGNUP_STAFF_ROLE_IDS", "151435841044165447
 
 # ================= MEDIA SYSTEM - SOLO NEWS IMPORTANTI =================
 
+MEDIA_CHANNEL_ID = "1506321171493163199"
 MEDIA_TRANSFER_MIN_OVERALL = 85
 MEDIA_TRANSFER_MIN_PRICE = 150
 MEDIA_SPECIAL_MATCH_MIN_GOALS = 5
+PLAYER_REPORT_CHANNEL_ID = "1506321044519125062"
+
 TOP_CLUBS_FOR_MEDIA = {
     "Real Madrid", "Barcellona", "Atletico Madrid", "Manchester City",
     "Manchester United", "Liverpool", "Arsenal", "Chelsea", "Tottenham",
@@ -340,15 +331,15 @@ BOT_ONLY_BYPASS_ROLE_IDS = {
 }
 
 BOT_ONLY_CHANNELS = {
-    1504884471286075532,  # calendario
-    1513229243021000896,  # risultati
-    1504874671064223784,  # classifiche
-    1504874788349542431,  # statistiche
+    1514358657989611591,  # calendario
+    1514358659470069991,  # risultati
+    1514358660598464586,  # classifiche
+    1514358662020468987,  # statistiche
     1504825224422756463,  # asta
     1504847601361616996,  # scambi
-    1504833349414551703,  # ricerca-giocatori
+    1514358654596419814,  # ricerca-giocatori
     1504846794142781480,  # spam-chat
-    1504847438727610519,  # rose
+    1514358655938592948,  # rose
 }
 
 DEFAULT_BUDGET = 500
@@ -2002,9 +1993,9 @@ class AuctionView(discord.ui.View):
 
 # ================= PERMESSI STAFF / LOG / CONFERME =================
 
-OWNER_STAFF_ROLE_ID = os.getenv("OWNER_STAFF_ROLE_ID", OWNER_STAFF_ROLE_ID)      # FOUNDER: comandi sensibili
-LIMITED_STAFF_ROLE_ID = os.getenv("LIMITED_STAFF_ROLE_ID", LIMITED_STAFF_ROLE_ID)    # STAFF: no comandi sensibili
-STAFF_LOG_CHANNEL_ID = int(os.getenv("STAFF_LOG_CHANNEL_ID", str(STAFF_LOG_CHANNEL_ID)))
+OWNER_STAFF_ROLE_ID = "1398342848436240434"      # FOUNDER: comandi sensibili
+LIMITED_STAFF_ROLE_ID = "1398358193197027408"    # STAFF: no comandi sensibili
+STAFF_LOG_CHANNEL_ID = 1506321007873495070
 
 DANGEROUS_ACTIONS = {
     "reset",
@@ -2292,7 +2283,7 @@ async def ask_danger_confirmation(interaction, action_name, description, callbac
 BACKUP_DIR = Path("backups")
 BACKUP_DIR.mkdir(exist_ok=True)
 MAX_BACKUPS_TO_KEEP = 5
-BACKUP_NOTIFICATION_CHANNEL_ID = int(os.getenv("BACKUP_NOTIFICATION_CHANNEL_ID", str(BACKUP_NOTIFICATION_CHANNEL_ID)))
+BACKUP_NOTIFICATION_CHANNEL_ID = 1506321007873495070
 
 # Se il tuo db.py usa un nome diverso, modifica qui.
 DATABASE_CANDIDATES = [
@@ -2727,7 +2718,7 @@ async def nomi_gironi_random(interaction: discord.Interaction):
 
 # ================= SISTEMA ATTIVITÀ PLAYER CORRETTO =================
 
-INACTIVITY_CHANNEL_ID = int(os.getenv("INACTIVITY_CHANNEL_ID", str(INACTIVITY_CHANNEL_ID)))
+INACTIVITY_CHANNEL_ID = 1505325803683184743
 INACTIVITY_HOURS_LIMIT = 22
 INACTIVITY_CHECK_INTERVAL = 79200  # 22 ore
 
@@ -10318,9 +10309,12 @@ class ResultConfirmView(discord.ui.View):
         conn.close()
 
         sync_site_after_confirmed_match(self.match_id)
+        await publish_confirmed_result_to_results_channel("championship_matches", self.match_id)
+        await publish_updated_panels_after_result("championship_matches", self.match_id, kind="championship")
+        await close_agreement_thread_for_match("championship_matches", self.match_id, result_text="Risultato confermato.")
 
         embed = build_result_embed(self.match_id)
-        await interaction.response.edit_message(content="✅ Risultato confermato e sito aggiornato.", embed=embed, view=None)
+        await interaction.response.edit_message(content="✅ Risultato confermato, pubblicato e sito aggiornato.", embed=embed, view=None)
 
     @discord.ui.button(label="Contesta", style=discord.ButtonStyle.danger)
     async def contest(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -10889,8 +10883,11 @@ class GuidedResultConfirmView(discord.ui.View):
             conn.commit()
             conn.close()
             sync_site_after_confirmed_match(self.match_id)
+            await publish_confirmed_result_to_results_channel("championship_matches", self.match_id)
+            await publish_updated_panels_after_result("championship_matches", self.match_id, kind="championship")
+            await close_agreement_thread_for_match("championship_matches", self.match_id, result_text="Risultato confermato.")
             embed = build_result_embed(self.match_id)
-            await interaction.response.edit_message(content="✅ Risultato confermato e sito aggiornato.", embed=embed, view=None)
+            await interaction.response.edit_message(content="✅ Risultato confermato, pubblicato e sito aggiornato.", embed=embed, view=None)
             return
 
         if self.kind == "national_cup":
@@ -10920,8 +10917,11 @@ class GuidedResultConfirmView(discord.ui.View):
                     safe_int(m.get("home_goals")),
                     safe_int(m.get("away_goals")),
                 )
+            await publish_confirmed_result_to_results_channel("national_cup_matches", self.match_id)
+            await publish_updated_panels_after_result("national_cup_matches", self.match_id, kind="national_cup")
+            await close_agreement_thread_for_match("national_cup_matches", self.match_id, result_text="Risultato coppa confermato.")
             embed = build_guided_cup_embed(self.match_id)
-            await interaction.response.edit_message(content="✅ Risultato coppa confermato e sito aggiornato.", embed=embed, view=None)
+            await interaction.response.edit_message(content="✅ Risultato coppa confermato, pubblicato e sito aggiornato.", embed=embed, view=None)
             return
 
         conn.close()
@@ -11853,10 +11853,6 @@ def parse_scorers_text(raw):
 def save_unified_result_and_sync(source_table, match_id, home_goals, away_goals, home_scorers=None, away_scorers=None):
     home_scorers = home_scorers or []
     away_scorers = away_scorers or []
-    try:
-        ensure_site_standings_columns()
-    except Exception as e:
-        print(f"[RISULTATO SYNC] Migrazione schema saltata: {e}")
     conn = db_connect_safe()
     cur = conn.cursor()
     try:
@@ -12611,75 +12607,6 @@ def ensure_site_standings_columns():
         ]:
             cur.execute(sql)
 
-        # Schema usato da pannello risultati/statistiche.
-        # Serve anche se on_ready non esegue ensure_extra_tables/ensure_results_calendar_tables.
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS match_results (
-                id BIGSERIAL PRIMARY KEY,
-                source_table TEXT,
-                source_match_id TEXT,
-                competition_name TEXT,
-                competition_type TEXT,
-                round TEXT,
-                home_team TEXT,
-                away_team TEXT,
-                home_score INTEGER DEFAULT 0,
-                away_score INTEGER DEFAULT 0,
-                winner TEXT,
-                status TEXT DEFAULT 'played',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        for sql in [
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS source_table TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS source_match_id TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS competition_name TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS competition_type TEXT",
-            'ALTER TABLE match_results ADD COLUMN IF NOT EXISTS "round" TEXT',
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS home_team TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS away_team TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS home_score INTEGER DEFAULT 0",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS away_score INTEGER DEFAULT 0",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS winner TEXT",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'played'",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "ALTER TABLE match_results ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        ]:
-            cur.execute(sql)
-
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS goalscorers (
-                id BIGSERIAL PRIMARY KEY,
-                fixture_id BIGINT,
-                source_table TEXT,
-                source_match_id TEXT,
-                user_id TEXT,
-                club_name TEXT,
-                player_name TEXT,
-                goals INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        for sql in [
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS fixture_id BIGINT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS source_table TEXT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS source_match_id TEXT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS user_id TEXT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS club_name TEXT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS player_name TEXT",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS goals INTEGER DEFAULT 1",
-            "ALTER TABLE goalscorers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-        ]:
-            cur.execute(sql)
-
-        try:
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_match_results_source ON match_results(source_table, source_match_id)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_goalscorers_source ON goalscorers(source_table, source_match_id)")
-            cur.execute("CREATE INDEX IF NOT EXISTS idx_standings_comp ON standings(competition_name, competition_type)")
-        except Exception:
-            pass
-
         conn.commit()
         return True
     except Exception as e:
@@ -13115,11 +13042,6 @@ def build_national_cup_bracket_embed_any(competition_name):
     if has_data:
         return embed
 
-    try:
-        ensure_site_standings_columns()
-    except Exception as e:
-        print(f"[PANNELLO STATISTICHE] Migrazione schema saltata: {e}")
-
     conn = connect()
     cur = conn.cursor()
     rows = []
@@ -13170,7 +13092,7 @@ async def send_classifica_category_from_panel(interaction: discord.Interaction, 
     except Exception as e:
         print(f"[PANNELLO CLASSIFICA] Migrazione classifiche fallita: {e}")
 
-    comps = await asyncio.to_thread(get_user_classifica_competitions_by_category, interaction.user.id, category)
+    comps = get_user_classifica_competitions_by_category(interaction.user.id, category)
     if not comps:
         embed = discord.Embed(
             title="❌ NON SEI ISCRITTO ALLA COMPETIZIONE",
@@ -13178,44 +13100,37 @@ async def send_classifica_category_from_panel(interaction: discord.Interaction, 
             color=discord.Color.red()
         )
         embed.set_footer(text="BordoCampo FC26 • Classifiche")
-        await safe_send(interaction, embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    def _build_classifica_embeds():
-        built = []
-        for comp in comps[:10]:
-            if comp.get("kind") == "bracket":
-                if category == "nazionale":
-                    embed = build_national_cup_bracket_embed_any(comp.get("name"))
-                else:
-                    embed = build_bracket_embed(comp.get("name"))
+    embeds = []
+    for comp in comps[:10]:
+        if comp.get("kind") == "bracket":
+            if category == "nazionale":
+                embed = build_national_cup_bracket_embed_any(comp.get("name"))
             else:
-                embed = build_standings_embed(comp.get("type"), comp.get("name"))
-            embed.add_field(name="🌐 Sito", value=SITE_PUBLIC_TEXT, inline=False)
-            built.append(embed)
-        return built
+                embed = build_bracket_embed(comp.get("name"))
+        else:
+            embed = build_standings_embed(comp.get("type"), comp.get("name"))
+        embed.add_field(name="🌐 Sito", value=SITE_PUBLIC_TEXT, inline=False)
+        embeds.append(embed)
 
-    embeds = await asyncio.to_thread(_build_classifica_embeds)
-    await safe_send(interaction, embeds=embeds, ephemeral=True)
+    await interaction.followup.send(embeds=embeds, ephemeral=True)
 
 
 def _stats_category_filter_sql(category):
-    # psycopg2 vuole UN SOLO parametro array per LIKE ANY(%s::text[]).
-    # Prima passava più stringhe separate e causava:
-    # "not all arguments converted during string formatting".
-    european_patterns = ["%europe%", "%champions%", "%europa%", "%conference%"]
-    cup_patterns = ["%coppa%"] + european_patterns
-    text_expr = "LOWER(COALESCE(mr.competition_type,'') || ' ' || COALESCE(mr.competition_name,''))"
-
     if category == "campionato":
-        return f"AND NOT ({text_expr} LIKE ANY(%s::text[]))", [cup_patterns]
+        return "AND NOT (LOWER(COALESCE(mr.competition_type,'') || ' ' || COALESCE(mr.competition_name,'')) LIKE ANY(%s))", [[
+            "%coppa%", "%europe%", "%champions%", "%europa%", "%conference%"
+        ]]
     if category == "europea":
-        return f"AND ({text_expr} LIKE ANY(%s::text[]))", [european_patterns]
+        return "AND (LOWER(COALESCE(mr.competition_type,'') || ' ' || COALESCE(mr.competition_name,'')) LIKE ANY(%s))", [[
+            "%europe%", "%champions%", "%europa%", "%conference%"
+        ]]
     if category == "nazionale":
-        return (
-            f"AND ({text_expr} LIKE %s OR LOWER(COALESCE(mr.competition_name,'')) LIKE %s)",
-            ["%coppa nazionale%", "%coppa%"]
-        )
+        return "AND (LOWER(COALESCE(mr.competition_type,'') || ' ' || COALESCE(mr.competition_name,'')) LIKE %s OR LOWER(COALESCE(mr.competition_name,'')) LIKE %s)", [
+            "%coppa nazionale%", "%coppa%"
+        ]
     return "", []
 
 
@@ -13230,11 +13145,6 @@ def build_top_scorers_embed_for_competition(category, competition_name=None, com
         "europea": discord.Color.blue(),
         "nazionale": discord.Color.gold(),
     }
-
-    try:
-        ensure_site_standings_columns()
-    except Exception as e:
-        print(f"[PANNELLO STATISTICHE] Migrazione schema saltata: {e}")
 
     conn = connect()
     cur = conn.cursor()
@@ -13300,12 +13210,8 @@ def build_top_scorers_embed_for_competition(category, competition_name=None, com
 
 async def send_stats_category_from_panel(interaction: discord.Interaction, category: str):
     await safe_defer(interaction, ephemeral=True, thinking=True)
-    try:
-        await asyncio.to_thread(ensure_site_standings_columns)
-    except Exception as e:
-        print(f"[PANNELLO STATISTICHE] Migrazione schema fallita: {e}")
 
-    comps = await asyncio.to_thread(get_user_classifica_competitions_by_category, interaction.user.id, category)
+    comps = get_user_classifica_competitions_by_category(interaction.user.id, category)
     if not comps:
         embed = discord.Embed(
             title="❌ NON SEI ISCRITTO ALLA COMPETIZIONE",
@@ -13313,22 +13219,391 @@ async def send_stats_category_from_panel(interaction: discord.Interaction, categ
             color=discord.Color.red()
         )
         embed.set_footer(text="BordoCampo FC26 • Statistiche")
-        await safe_send(interaction, embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
-    def _build_stats_embeds():
-        built = []
-        for comp in comps[:10]:
-            built.append(build_top_scorers_embed_for_competition(
-                category,
-                competition_name=comp.get("name"),
-                competition_type=comp.get("type")
-            ))
-        return built
+    embeds = []
+    for comp in comps[:10]:
+        embeds.append(build_top_scorers_embed_for_competition(
+            category,
+            competition_name=comp.get("name"),
+            competition_type=comp.get("type")
+        ))
 
-    embeds = await asyncio.to_thread(_build_stats_embeds)
-    await safe_send(interaction, embeds=embeds, ephemeral=True)
+    await interaction.followup.send(embeds=embeds, ephemeral=True)
 
+
+
+# ================= ACCORDI PARTITE / THREAD AUTOMATICI =================
+
+def ensure_match_agreement_tables():
+    """Tabella unica per salvare i thread Discord creati per gli accordi partita."""
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS match_agreement_threads (
+                id SERIAL PRIMARY KEY,
+                source_table TEXT NOT NULL,
+                source_match_id TEXT NOT NULL,
+                competition_name TEXT,
+                competition_type TEXT,
+                category TEXT,
+                channel_id TEXT,
+                message_id TEXT,
+                thread_id TEXT,
+                status TEXT DEFAULT 'open',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(source_table, source_match_id)
+            )
+        """)
+        for sql in [
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS source_table TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS source_match_id TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS competition_name TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS competition_type TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS category TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS channel_id TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS message_id TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS thread_id TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'open'",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ]:
+            try:
+                cur.execute(sql)
+            except Exception:
+                pass
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_match_agreement_source ON match_agreement_threads(source_table, source_match_id)")
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[ACCORDI] Errore ensure_match_agreement_tables: {e}")
+    finally:
+        conn.close()
+
+
+def agreement_category_from_match(match):
+    text = normalize_text(f"{match.get('competition_type','')} {match.get('competition_name','')}")
+    source = str(match.get('source_table') or '')
+    if 'amichevol' in text or source == 'friendly_matches':
+        return 'Amichevoli'
+    if 'nazionale' in text or source == 'national_cup_matches':
+        return 'Coppe Nazionali'
+    if any(k in text for k in ['europe', 'champions', 'europa', 'conference']) or source == 'european_cup_matches':
+        return 'Coppe Europee'
+    return 'Campionati'
+
+
+def agreement_status_emoji(category):
+    return {
+        'Campionati': '🏆',
+        'Coppe Nazionali': '🇮🇹',
+        'Coppe Europee': '🌍',
+        'Amichevoli': '🤝',
+    }.get(category, '⚽')
+
+
+def get_match_agreement_row(source_table, source_match_id):
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT *
+            FROM match_agreement_threads
+            WHERE source_table = %s AND source_match_id = %s
+            LIMIT 1
+        """, (str(source_table), str(source_match_id)))
+        row = cur.fetchone()
+    except Exception as e:
+        print(f"[ACCORDI] Errore lettura thread: {e}")
+        row = None
+    finally:
+        conn.close()
+    return row
+
+
+def save_match_agreement_thread(match, channel_id, message_id, thread_id, status='open'):
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO match_agreement_threads
+                (source_table, source_match_id, competition_name, competition_type, category, channel_id, message_id, thread_id, status, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+            ON CONFLICT (source_table, source_match_id) DO UPDATE SET
+                competition_name = EXCLUDED.competition_name,
+                competition_type = EXCLUDED.competition_type,
+                category = EXCLUDED.category,
+                channel_id = EXCLUDED.channel_id,
+                message_id = EXCLUDED.message_id,
+                thread_id = EXCLUDED.thread_id,
+                status = EXCLUDED.status,
+                updated_at = CURRENT_TIMESTAMP
+        """, (
+            str(match.get('source_table')),
+            str(match.get('id')),
+            str(match.get('competition_name') or ''),
+            str(match.get('competition_type') or ''),
+            agreement_category_from_match(match),
+            str(channel_id),
+            str(message_id),
+            str(thread_id),
+            str(status),
+        ))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[ACCORDI] Errore salvataggio thread: {e}")
+    finally:
+        conn.close()
+
+
+async def get_agreements_channel(guild=None):
+    channel = None
+    try:
+        if guild:
+            channel = guild.get_channel(int(AGREEMENTS_CHANNEL_ID))
+        if not channel:
+            channel = bot.get_channel(int(AGREEMENTS_CHANNEL_ID))
+        if not channel:
+            channel = await bot.fetch_channel(int(AGREEMENTS_CHANNEL_ID))
+    except Exception as e:
+        print(f"[ACCORDI] Canale accordi non trovato: {e}")
+        channel = None
+    return channel
+
+
+async def create_agreement_thread_for_match(guild, match, *, force=False):
+    """Crea un thread ordinato nel canale accordi per una singola partita."""
+    ensure_match_agreement_tables()
+    source_table = str(match.get('source_table') or '')
+    source_match_id = str(match.get('id') or '')
+    if not source_table or not source_match_id:
+        return False
+
+    existing = get_match_agreement_row(source_table, source_match_id)
+    if existing and existing.get('thread_id') and not force:
+        return False
+
+    channel = await get_agreements_channel(guild)
+    if not channel:
+        return False
+
+    category = agreement_category_from_match(match)
+    emoji = agreement_status_emoji(category)
+    comp = str(match.get('competition_name') or 'Competizione')
+    ctype = str(match.get('competition_type') or category)
+    round_label = str(match.get('round') or 'Turno')
+    leg = str(match.get('leg') or '').strip()
+    leg_text = f" • {leg}" if leg else ""
+    home = str(match.get('home_club') or match.get('home_name') or 'Casa')
+    away = str(match.get('away_club') or match.get('away_name') or 'Trasferta')
+    home_id = str(match.get('home_user_id') or match.get('home_id') or '').strip()
+    away_id = str(match.get('away_user_id') or match.get('away_id') or '').strip()
+
+    thread_name = f"{emoji} {category} • {home} vs {away}"[:95]
+    mention_line = " ".join(f"<@{x}>" for x in [home_id, away_id] if x)
+
+    embed = discord.Embed(
+        title=f"{emoji} {home} vs {away}",
+        description=(
+            f"**Categoria:** {category}\n"
+            f"**Competizione:** {comp}\n"
+            f"**Tipo:** {ctype}\n"
+            f"**Turno/Giornata:** {round_label}{leg_text}\n\n"
+            "Questo thread serve solo per accordarsi su giorno e orario della partita.\n"
+            f"Quando avete giocato, inserite il risultato nel pannello <#{RESULTS_CHANNEL_ID}>."
+        ),
+        color=discord.Color.blurple()
+    )
+    if mention_line:
+        embed.add_field(name="Manager", value=mention_line, inline=False)
+    embed.set_footer(text="BordoCampo FC26 • Accordi partita")
+
+    try:
+        msg = await channel.send(embed=embed)
+        try:
+            thread = await msg.create_thread(name=thread_name, auto_archive_duration=10080)
+        except Exception:
+            thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread, auto_archive_duration=10080)
+        await thread.send(
+            f"{mention_line}\n\n"
+            f"⚽ **{home} vs {away}**\n"
+            f"📌 {category} • {comp} • {round_label}{leg_text}\n\n"
+            "Scrivete qui le vostre disponibilità e confermate l'orario."
+        )
+        save_match_agreement_thread(match, channel.id, msg.id, thread.id, status='open')
+        return True
+    except Exception as e:
+        print(f"[ACCORDI] Errore creazione thread {source_table}:{source_match_id}: {type(e).__name__}: {e}")
+        return False
+
+
+async def create_agreement_threads_for_pending_matches(guild, *, category_filter=None, only_missing=True):
+    """Crea i thread accordi per tutte le partite pending, divise per categoria nel nome thread."""
+    ensure_match_agreement_tables()
+    matches = unified_pending_matches(discord_id=None, only_user=False)
+    created = 0
+    skipped = 0
+    for m in matches:
+        category = agreement_category_from_match(m)
+        if category_filter and normalize_text(category_filter) not in normalize_text(category):
+            continue
+        if only_missing and get_match_agreement_row(m.get('source_table'), m.get('id')):
+            skipped += 1
+            continue
+        ok = await create_agreement_thread_for_match(guild, m, force=not only_missing)
+        if ok:
+            created += 1
+        else:
+            skipped += 1
+        await asyncio.sleep(0.2)
+    return created, skipped
+
+
+async def close_agreement_thread_for_match(source_table, source_match_id, *, result_text=None):
+    """Chiude/archivia il thread accordi quando il risultato viene confermato."""
+    row = get_match_agreement_row(source_table, source_match_id)
+    if not row or not row.get('thread_id'):
+        return False
+    try:
+        thread = bot.get_channel(int(row.get('thread_id')))
+        if not thread:
+            thread = await bot.fetch_channel(int(row.get('thread_id')))
+        if result_text:
+            try:
+                await thread.send(f"✅ Partita conclusa. {result_text}")
+            except Exception:
+                pass
+        try:
+            await thread.edit(archived=True, locked=True)
+        except Exception:
+            await thread.edit(archived=True)
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE match_agreement_threads
+            SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+            WHERE source_table = %s AND source_match_id = %s
+        """, (str(source_table), str(source_match_id)))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"[ACCORDI] Errore chiusura thread: {type(e).__name__}: {e}")
+        return False
+
+
+def _result_embed_from_match_result(row):
+    comp = row_get(row, 'competition_name', 'Competizione')
+    ctype = row_get(row, 'competition_type', 'Competizione')
+    home = row_get(row, 'home_team', 'Casa')
+    away = row_get(row, 'away_team', 'Trasferta')
+    hs = safe_int(row_get(row, 'home_score', 0))
+    aw = safe_int(row_get(row, 'away_score', 0))
+    round_label = row_get(row, 'round', '')
+    embed = discord.Embed(
+        title=f"✅ Risultato confermato • {comp}",
+        description=f"## {home} {hs} - {aw} {away}",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Competizione", value=f"{ctype}", inline=True)
+    if round_label:
+        embed.add_field(name="Giornata/Turno", value=str(round_label), inline=True)
+    embed.set_footer(text="BordoCampo FC26 • Risultati ufficiali")
+    return embed
+
+
+async def publish_confirmed_result_to_results_channel(source_table, source_match_id):
+    """Pubblica nel canale risultati ogni risultato confermato, già suddiviso per competizione nell'embed."""
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT *
+            FROM match_results
+            WHERE source_table = %s AND source_match_id = %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (str(source_table), str(source_match_id)))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return False
+        channel = bot.get_channel(int(RESULTS_CHANNEL_ID)) or await bot.fetch_channel(int(RESULTS_CHANNEL_ID))
+        await channel.send(embed=_result_embed_from_match_result(row))
+        return True
+    except Exception as e:
+        print(f"[RISULTATI PUBBLICA] Errore: {type(e).__name__}: {e}")
+        return False
+
+
+async def publish_updated_panels_after_result(source_table, source_match_id, *, kind='championship'):
+    """Dopo risultato confermato pubblica classifica/tabellone e statistiche aggiornate nei canali dedicati."""
+    try:
+        conn = connect()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT *
+            FROM match_results
+            WHERE source_table = %s AND source_match_id = %s
+            ORDER BY id DESC
+            LIMIT 1
+        """, (str(source_table), str(source_match_id)))
+        mr = cur.fetchone()
+        conn.close()
+        if not mr:
+            return False
+        comp_name = row_get(mr, 'competition_name', 'Competizione')
+        comp_type = row_get(mr, 'competition_type', 'Competizione')
+
+        standings_channel = bot.get_channel(int(STANDINGS_CHANNEL_ID)) or await bot.fetch_channel(int(STANDINGS_CHANNEL_ID))
+        stats_channel = bot.get_channel(int(STATS_CHANNEL_ID)) or await bot.fetch_channel(int(STATS_CHANNEL_ID))
+
+        try:
+            if normalize_text(comp_type).find('coppa nazionale') >= 0 or kind == 'national_cup':
+                emb = build_bracket_embed(comp_name)
+            else:
+                emb = build_standings_embed(comp_type, comp_name)
+            emb.title = f"🔄 Aggiornamento • {emb.title}"
+            await standings_channel.send(embed=emb)
+        except Exception as e:
+            print(f"[CLASSIFICA AUTO POST] Errore: {e}")
+
+        try:
+            category = 'nazionale' if normalize_text(comp_type).find('coppa nazionale') >= 0 else ('europea' if any(x in normalize_text(comp_type + ' ' + comp_name) for x in ['europe', 'champions', 'europa', 'conference']) else 'campionato')
+            stats_emb = build_top_scorers_embed_for_competition(category, competition_name=comp_name, competition_type=comp_type)
+            stats_emb.title = f"🔄 Aggiornamento • {stats_emb.title}"
+            await stats_channel.send(embed=stats_emb)
+        except Exception as e:
+            print(f"[STATISTICHE AUTO POST] Errore: {e}")
+        return True
+    except Exception as e:
+        print(f"[PANNELLI POST RESULT] Errore: {type(e).__name__}: {e}")
+        return False
+
+
+@tree.command(name="genera_accordi_partite", description="Staff: crea i thread accordi per tutte le partite da giocare")
+@app_commands.describe(categoria="Opzionale: Campionati, Coppe Nazionali, Coppe Europee o Amichevoli")
+async def genera_accordi_partite(interaction: discord.Interaction, categoria: str = None):
+    if not is_league_admin(interaction):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    created, skipped = await create_agreement_threads_for_pending_matches(interaction.guild, category_filter=categoria, only_missing=True)
+    await interaction.followup.send(
+        f"✅ Thread accordi creati: **{created}**\n↪️ Già presenti/saltati: **{skipped}**\nCanale: <#{AGREEMENTS_CHANNEL_ID}>",
+        ephemeral=True
+    )
+
+# ================= FINE ACCORDI PARTITE =================
 
 class ResultsPanelView(discord.ui.View):
     def __init__(self):
@@ -13509,8 +13784,8 @@ print("[BOOT] Avvio finale bot.run(TOKEN)")
 
 # ================= RESET TOTALE BOT + RUOLI =================
 
-RESET_TOTAL_REGISTERED_ROLE_ID = int(os.getenv("RESET_TOTAL_REGISTERED_ROLE_ID", LEAGUE_PLAYER_ROLE_ID))   # ISCRITTO
-RESET_TOTAL_REQUEST_ROLE_ID = int(os.getenv("RESET_TOTAL_REQUEST_ROLE_ID", REQUEST_ROLE_ID))      # RICHIESTA ISCRIZIONE
+RESET_TOTAL_REGISTERED_ROLE_ID = 1398332847655358554   # ISCRITTO
+RESET_TOTAL_REQUEST_ROLE_ID = 1398323695558332604      # RICHIESTA ISCRIZIONE
 
 
 def reset_total_database_state():
@@ -14288,6 +14563,98 @@ async def setup_pannelli_operativi(interaction: discord.Interaction):
             pass
 
 # ============================================================================
+
+
+@tree.command(name="setup_canali_bcfc", description="Staff: pubblica tutti i pannelli nei nuovi canali BCFC")
+async def setup_canali_bcfc(interaction: discord.Interaction):
+    try:
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+    except Exception:
+        pass
+
+    if not is_admin(interaction):
+        await safe_send(interaction, "❌ Solo lo staff può pubblicare i pannelli.", ephemeral=True)
+        return
+
+    try:
+        # Pannello ricerca giocatori
+        search_embed_panel = _panel_embed(
+            "🔎 Ricerca Giocatori",
+            "Cerca i giocatori liberi disponibili sul mercato usando il pulsante sotto.",
+            discord.Color.blue()
+        )
+        await _send_or_replace_panel(interaction.guild, SEARCH_CHANNEL_ID, search_embed_panel, SearchPlayersPanelView())
+
+        # Pannello rose
+        my_team_embed_panel = _panel_embed(
+            "📋 Rose",
+            "Da qui ogni player può vedere la propria rosa aggiornata.",
+            discord.Color.green()
+        )
+        await _send_or_replace_panel(interaction.guild, ROSE_CHANNEL_ID, my_team_embed_panel, MyTeamPanelView())
+
+        # Pannelli competizioni
+        results_embed = _bc_panel_embed(
+            "Inserimento Risultati",
+            "Dopo aver giocato una partita, inserisci il risultato da qui. L'avversario dovrà confermare o contestare.",
+            discord.Color.gold(),
+            "⚽"
+        )
+        calendar_embed = _bc_panel_embed(
+            "Calendario Partite",
+            "Consulta il tuo calendario personale diviso per competizione.",
+            discord.Color.blurple(),
+            "📅"
+        )
+        standings_embed = _bc_panel_embed(
+            "Classifiche e Tabelloni",
+            "Consulta classifiche dei campionati e tabelloni delle coppe.",
+            discord.Color.green(),
+            "📊"
+        )
+        stats_embed = _bc_panel_embed(
+            "Statistiche Competizioni",
+            "Consulta marcatori e statistiche delle competizioni.",
+            discord.Color.gold(),
+            "📈"
+        )
+
+        await _send_panel_to_channel(interaction.guild, RESULTS_CHANNEL_ID, results_embed, ResultsPanelView())
+        await _send_panel_to_channel(interaction.guild, CALENDAR_CHANNEL_ID, calendar_embed, CalendarPanelView())
+        await _send_panel_to_channel(interaction.guild, STANDINGS_CHANNEL_ID, standings_embed, StandingsPanelView())
+        await _send_panel_to_channel(interaction.guild, STATS_CHANNEL_ID, stats_embed, StatsPanelView())
+
+        # Messaggio guida nel canale accordi
+        accordi_channel = await get_agreements_channel(interaction.guild)
+        if accordi_channel:
+            embed = discord.Embed(
+                title="🤝 Accordi Partite",
+                description=(
+                    "Qui il bot creerà automaticamente un thread per ogni partita da giocare.\n\n"
+                    "I thread saranno divisi nel nome per:\n"
+                    "🏆 Campionati\n🇮🇹 Coppe Nazionali\n🌍 Coppe Europee\n🤝 Amichevoli\n\n"
+                    "Usate i thread per accordarvi su giorno e orario. Dopo la conferma del risultato, il thread verrà chiuso automaticamente."
+                ),
+                color=discord.Color.blurple()
+            )
+            embed.set_footer(text="BordoCampo FC26 • Accordi partita")
+            await accordi_channel.send(embed=embed)
+
+        await interaction.followup.send(
+            "✅ Setup completato nei nuovi canali.\n"
+            f"🔎 Ricerca: <#{SEARCH_CHANNEL_ID}>\n"
+            f"📋 Rose: <#{ROSE_CHANNEL_ID}>\n"
+            f"📅 Calendario: <#{CALENDAR_CHANNEL_ID}>\n"
+            f"⚽ Risultati: <#{RESULTS_CHANNEL_ID}>\n"
+            f"📊 Classifiche: <#{STANDINGS_CHANNEL_ID}>\n"
+            f"📈 Statistiche: <#{STATS_CHANNEL_ID}>\n"
+            f"🤝 Accordi: <#{AGREEMENTS_CHANNEL_ID}>",
+            ephemeral=True
+        )
+    except Exception as e:
+        print(f"[SETUP CANALI BCFC] Errore: {type(e).__name__}: {e}")
+        await safe_send(interaction, f"❌ Errore setup canali: `{type(e).__name__}: {e}`", ephemeral=True)
+
 
 # ==========================================================
 
