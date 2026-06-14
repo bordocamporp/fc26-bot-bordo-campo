@@ -1,6 +1,7 @@
 import os
 import asyncio
 import random
+import json
 import unicodedata
 import shutil
 from pathlib import Path
@@ -31,7 +32,9 @@ SCAMBI_CHANNEL_ID = "1514358653254107136"
 REQUEST_ROLE_ID = "1398323695558332604"
 PRE_ISCRITTO_ROLE_ID = "1514358448865935572"
 
-RESULTS_CHANNEL_ID = "1515766439796015316"
+REFERTI_CHANNEL_ID = "1514358659470069991"  # canale dove i player inseriscono i referti
+RESULTS_CHANNEL_ID = REFERTI_CHANNEL_ID
+OFFICIAL_RESULTS_CHANNEL_ID = "1515766439796015316"  # canale risultati ufficiali confermati
 STANDINGS_CHANNEL_ID = "1514358660598464586"
 STATS_CHANNEL_ID = "1514358662020468987"
 CALENDAR_CHANNEL_ID = "1514358657989611591"
@@ -334,7 +337,7 @@ BOT_ONLY_BYPASS_ROLE_IDS = {
 
 BOT_ONLY_CHANNELS = {
     1514358657989611591,  # calendario
-    1514358659470069991,  # risultati
+    1515766439796015316,  # risultati
     1514358660598464586,  # classifiche
     1514358662020468987,  # statistiche
     1514358651115278436,  # asta
@@ -11935,8 +11938,20 @@ def unified_pending_matches(discord_id=None, only_user=True):
     conn.close()
     return out
 
+
+def is_home_match_for_user(match, discord_id):
+    if str(match.get("home_user_id") or "") == str(discord_id):
+        return True
+    try:
+        club = get_manager_club_for_user(discord_id)
+        if club and normalize_text(match.get("home_club") or "") == normalize_text(club):
+            return True
+    except Exception:
+        pass
+    return False
+
 def get_guided_competition_options(discord_id):
-    matches = unified_pending_matches(discord_id=discord_id, only_user=True)
+    matches = [m for m in unified_pending_matches(discord_id=discord_id, only_user=True) if is_home_match_for_user(m, discord_id)]
 
     grouped = {}
     for m in matches:
@@ -11969,7 +11984,7 @@ def get_matches_for_competition(discord_id, competition_key):
     else:
         ctype, cname = "", str(competition_key)
 
-    matches = unified_pending_matches(discord_id=discord_id, only_user=True)
+    matches = [m for m in unified_pending_matches(discord_id=discord_id, only_user=True) if is_home_match_for_user(m, discord_id)]
     return [
         m for m in matches
         if normalize_text(m["competition_name"]) == normalize_text(cname)
@@ -12298,6 +12313,390 @@ class PlayerScorerView(discord.ui.View):
         self.add_item(PlayerScorerSelect(flow_view, side, players))
 
 
+
+# ================= REFERTI: CONFERMA AVVERSARIO =================
+
+def _json_dumps_safe(value):
+    try:
+        return json.dumps(value or [], ensure_ascii=False)
+    except Exception:
+        return "[]"
+
+
+def _json_loads_safe(value):
+    try:
+        data = json.loads(value or "[]")
+        out = []
+        for item in data:
+            if isinstance(item, dict):
+                name = str(item.get("name") or "").strip()
+                goals = safe_int(item.get("goals"), 1)
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name = str(item[0]).strip()
+                goals = safe_int(item[1], 1)
+            else:
+                continue
+            if name:
+                out.append((name, max(1, goals)))
+        return out
+    except Exception:
+        return []
+
+
+def ensure_pending_results_table():
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS pending_results (
+            id SERIAL PRIMARY KEY,
+            source_table TEXT NOT NULL,
+            source_match_id TEXT NOT NULL,
+            competition_name TEXT,
+            competition_type TEXT,
+            round TEXT,
+            home_user_id TEXT,
+            away_user_id TEXT,
+            home_club TEXT,
+            away_club TEXT,
+            home_goals INTEGER DEFAULT 0,
+            away_goals INTEGER DEFAULT 0,
+            home_scorers TEXT,
+            away_scorers TEXT,
+            submitted_by TEXT,
+            confirm_by TEXT,
+            status TEXT DEFAULT 'pending',
+            contest_reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            confirmed_at TIMESTAMP,
+            contested_at TIMESTAMP
+        )
+        """)
+        for sql in [
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS source_table TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS source_match_id TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS competition_name TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS competition_type TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS round TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS home_user_id TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS away_user_id TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS home_club TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS away_club TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS home_goals INTEGER DEFAULT 0",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS away_goals INTEGER DEFAULT 0",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS home_scorers TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS away_scorers TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS submitted_by TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS confirm_by TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS contest_reason TEXT",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS contested_at TIMESTAMP",
+        ]:
+            try:
+                cur.execute(sql)
+            except Exception:
+                pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pending_results_match ON pending_results(source_table, source_match_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_pending_results_status ON pending_results(status)")
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[PENDING RESULTS] Errore ensure table: {e}")
+    finally:
+        conn.close()
+
+
+def create_pending_result(match, submitted_by, home_goals, away_goals, home_scorers, away_scorers):
+    ensure_pending_results_table()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE pending_results
+            SET status = 'superseded'
+            WHERE source_table = %s
+              AND source_match_id = %s
+              AND status = 'pending'
+        """, (str(match.get("source_table")), str(match.get("id"))))
+        cur.execute("""
+            INSERT INTO pending_results (
+                source_table, source_match_id, competition_name, competition_type, round,
+                home_user_id, away_user_id, home_club, away_club,
+                home_goals, away_goals, home_scorers, away_scorers,
+                submitted_by, confirm_by, status, created_at
+            )
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'pending',CURRENT_TIMESTAMP)
+            RETURNING id
+        """, (
+            str(match.get("source_table")), str(match.get("id")),
+            str(match.get("competition_name") or ""), str(match.get("competition_type") or ""), str(match.get("round") or ""),
+            str(match.get("home_user_id") or ""), str(match.get("away_user_id") or ""),
+            str(match.get("home_club") or ""), str(match.get("away_club") or ""),
+            safe_int(home_goals), safe_int(away_goals),
+            _json_dumps_safe([{"name": n, "goals": safe_int(g, 1)} for n, g in home_scorers]),
+            _json_dumps_safe([{"name": n, "goals": safe_int(g, 1)} for n, g in away_scorers]),
+            str(submitted_by), str(match.get("away_user_id") or ""),
+        ))
+        row = cur.fetchone()
+        conn.commit()
+        return safe_int(row_get(row, "id"), 0)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_pending_result(pending_id):
+    ensure_pending_results_table()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM pending_results WHERE id = %s LIMIT 1", (int(pending_id),))
+        return cur.fetchone()
+    finally:
+        conn.close()
+
+
+def _scorer_lines_from_json(raw):
+    scorers = _json_loads_safe(raw)
+    if not scorers:
+        return "Nessun marcatore."
+    return "\n".join(f"• **{name}** × {goals}" for name, goals in scorers)
+
+
+def build_pending_result_embed(row):
+    home = row_get(row, "home_club", "Casa")
+    away = row_get(row, "away_club", "Trasferta")
+    hg = safe_int(row_get(row, "home_goals", 0))
+    ag = safe_int(row_get(row, "away_goals", 0))
+    comp = row_get(row, "competition_name", "Competizione")
+    ctype = row_get(row, "competition_type", "Competizione")
+    round_label = row_get(row, "round", "")
+    embed = discord.Embed(
+        title="📋 Referto da confermare",
+        description=(
+            f"## {home} {hg} - {ag} {away}\n\n"
+            "Controlla il referto. Se è corretto premi **ACCETTA**. "
+            "Se non è corretto premi **CONTESTA** e scrivi il motivo."
+        ),
+        color=discord.Color.orange(),
+    )
+    embed.add_field(name="Competizione", value=f"{ctype} • {comp}", inline=False)
+    if round_label:
+        embed.add_field(name="Giornata/Fase", value=str(round_label), inline=False)
+    embed.add_field(name=f"Marcatori {home}", value=_scorer_lines_from_json(row_get(row, "home_scorers", "[]")), inline=False)
+    embed.add_field(name=f"Marcatori {away}", value=_scorer_lines_from_json(row_get(row, "away_scorers", "[]")), inline=False)
+    embed.add_field(name="Inserito da", value=f"<@{row_get(row, 'submitted_by', '')}>", inline=True)
+    embed.add_field(name="Da confermare", value=f"<@{row_get(row, 'confirm_by', '')}>", inline=True)
+    embed.set_footer(text=f"BordoCampo FC26 • Referto #{row_get(row, 'id', '')}")
+    return embed
+
+
+async def delete_agreement_thread_for_match(source_table, source_match_id):
+    row = get_match_agreement_row(source_table, source_match_id)
+    if not row:
+        return False
+    ok = False
+    try:
+        thread_id = row_get(row, "thread_id")
+        if thread_id:
+            try:
+                thread = bot.get_channel(int(thread_id)) or await bot.fetch_channel(int(thread_id))
+                await thread.delete(reason="Risultato confermato: thread accordi rimosso automaticamente")
+                ok = True
+            except Exception as e:
+                print(f"[ACCORDI DELETE] Thread non eliminato: {e}")
+        channel_id = row_get(row, "channel_id")
+        message_id = row_get(row, "message_id")
+        if channel_id and message_id:
+            try:
+                channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+                msg = await channel.fetch_message(int(message_id))
+                await msg.delete()
+                ok = True
+            except Exception as e:
+                print(f"[ACCORDI DELETE] Messaggio principale non eliminato: {e}")
+        conn = connect()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE match_agreement_threads
+                SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+                WHERE source_table = %s AND source_match_id = %s
+            """, (str(source_table), str(source_match_id)))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[ACCORDI DELETE] Errore rimozione: {type(e).__name__}: {e}")
+    return ok
+
+
+async def finalize_pending_result(pending_id, guild=None):
+    row = get_pending_result(pending_id)
+    if not row:
+        raise RuntimeError("Referto pending non trovato.")
+    if str(row_get(row, "status", "pending")) != "pending":
+        raise RuntimeError("Questo referto è già stato gestito.")
+
+    source_table = str(row_get(row, "source_table"))
+    source_match_id = str(row_get(row, "source_match_id"))
+    home_scorers = _json_loads_safe(row_get(row, "home_scorers", "[]"))
+    away_scorers = _json_loads_safe(row_get(row, "away_scorers", "[]"))
+
+    match = save_unified_result_and_sync(
+        source_table,
+        source_match_id,
+        safe_int(row_get(row, "home_goals", 0)),
+        safe_int(row_get(row, "away_goals", 0)),
+        home_scorers,
+        away_scorers,
+    )
+
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE pending_results
+            SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (int(pending_id),))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+    finally:
+        conn.close()
+
+    kind = 'national_cup' if source_table == 'national_cup_matches' else ('european_cup' if source_table == 'european_cup_matches' else 'championship')
+    await publish_confirmed_result_to_results_channel(source_table, source_match_id)
+    await publish_updated_panels_after_result(source_table, source_match_id, kind=kind)
+    await delete_agreement_thread_for_match(source_table, source_match_id)
+    return match
+
+
+async def notify_opponent_for_pending_result(guild, pending_id):
+    row = get_pending_result(pending_id)
+    if not row:
+        return False
+    confirm_by = str(row_get(row, "confirm_by", "") or "").strip()
+    if not confirm_by:
+        return False
+    try:
+        member = await get_member_safe(guild, confirm_by) if guild else None
+        user = member or await bot.fetch_user(int(confirm_by))
+        await user.send(embed=build_pending_result_embed(row), view=PendingResultConfirmView(pending_id, confirm_by))
+        return True
+    except Exception as e:
+        print(f"[PENDING RESULT DM] Errore DM avversario {confirm_by}: {type(e).__name__}: {e}")
+        return False
+
+
+class ContestResultModal(discord.ui.Modal, title="Contesta referto"):
+    reason = discord.ui.TextInput(
+        label="Motivo contestazione",
+        placeholder="Spiega cosa non torna nel risultato o nei marcatori...",
+        required=True,
+        style=discord.TextStyle.paragraph,
+        max_length=1000,
+    )
+
+    def __init__(self, pending_id, confirm_by):
+        super().__init__()
+        self.pending_id = int(pending_id)
+        self.confirm_by = str(confirm_by)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.confirm_by:
+            await interaction.response.send_message("❌ Solo il player avversario può contestare questo referto.", ephemeral=True)
+            return
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+        row = get_pending_result(self.pending_id)
+        if not row or str(row_get(row, "status", "pending")) != "pending":
+            await interaction.followup.send("⚠️ Questo referto è già stato gestito.", ephemeral=True)
+            return
+        conn = connect()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                UPDATE pending_results
+                SET status = 'contested', contest_reason = %s, contested_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (str(self.reason.value).strip(), self.pending_id))
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            await interaction.followup.send(f"❌ Errore contestazione: `{type(e).__name__}`", ephemeral=True)
+            return
+        finally:
+            conn.close()
+
+        row = get_pending_result(self.pending_id)
+        try:
+            channel = None
+            if interaction.guild:
+                channel = interaction.guild.get_channel(int(MATCH_DEADLINE_STAFF_CHANNEL_ID))
+            if not channel:
+                channel = bot.get_channel(int(MATCH_DEADLINE_STAFF_CHANNEL_ID)) or await bot.fetch_channel(int(MATCH_DEADLINE_STAFF_CHANNEL_ID))
+            staff_embed = build_pending_result_embed(row)
+            staff_embed.title = "🚨 Referto contestato"
+            staff_embed.color = discord.Color.red()
+            staff_embed.add_field(name="Motivo contestazione", value=str(self.reason.value).strip()[:1000], inline=False)
+            staff_embed.add_field(name="Contestato da", value=interaction.user.mention, inline=True)
+            await channel.send(content="🚨 **Contestazione risultato da verificare**", embed=staff_embed)
+        except Exception as e:
+            print(f"[PENDING RESULT CONTEST] Errore invio staff: {e}")
+
+        try:
+            await interaction.message.edit(content="⚠️ Referto contestato. Lo staff è stato avvisato.", embed=build_pending_result_embed(row), view=None)
+        except Exception:
+            pass
+        await interaction.followup.send("⚠️ Contestazione inviata allo staff. Attendi verifica.", ephemeral=True)
+
+
+class PendingResultConfirmView(discord.ui.View):
+    def __init__(self, pending_id, confirm_by):
+        super().__init__(timeout=172800)
+        self.pending_id = int(pending_id)
+        self.confirm_by = str(confirm_by)
+
+    @discord.ui.button(label="ACCETTA", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.confirm_by:
+            await interaction.response.send_message("❌ Solo il player avversario può accettare questo referto.", ephemeral=True)
+            return
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+        try:
+            match = await finalize_pending_result(self.pending_id, interaction.guild)
+            try:
+                await interaction.message.edit(content="✅ Referto accettato. Risultato ufficiale pubblicato.", embed=build_pending_result_embed(get_pending_result(self.pending_id)), view=None)
+            except Exception:
+                pass
+            row = get_pending_result(self.pending_id)
+            await interaction.followup.send(
+                f"✅ Risultato confermato: **{match['home_club']} {safe_int(row_get(row, 'home_goals', 0))} - {safe_int(row_get(row, 'away_goals', 0))} {match['away_club']}**",
+                ephemeral=True,
+            )
+        except Exception as e:
+            print(f"[PENDING RESULT ACCEPT] {type(e).__name__}: {e}")
+            await interaction.followup.send(f"❌ Errore conferma risultato: `{type(e).__name__}: {e}`", ephemeral=True)
+
+    @discord.ui.button(label="CONTESTA", style=discord.ButtonStyle.danger, emoji="❌")
+    async def contest(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if str(interaction.user.id) != self.confirm_by:
+            await interaction.response.send_message("❌ Solo il player avversario può contestare questo referto.", ephemeral=True)
+            return
+        await interaction.response.send_modal(ContestResultModal(self.pending_id, self.confirm_by))
+
+# ================= FINE REFERTI: CONFERMA AVVERSARIO =================
+
 class GuidedScorerFlowView(discord.ui.View):
     def __init__(self, match):
         super().__init__(timeout=600)
@@ -12390,14 +12789,22 @@ class GuidedScorerFlowView(discord.ui.View):
         self.away_scorers = []
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
-    @discord.ui.button(label="Conferma risultato", style=discord.ButtonStyle.success, emoji="✅")
+    @discord.ui.button(label="Invia referto all'avversario", style=discord.ButtonStyle.success, emoji="📨")
     async def confirm_result(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Solo la squadra di casa può inviare il referto ufficiale.
+        if not is_home_match_for_user(self.match, interaction.user.id):
+            await interaction.response.send_message(
+                "❌ Solo il manager della squadra di casa può inserire e inviare il referto.",
+                ephemeral=True,
+            )
+            return
+
         home_goals = self.total_home()
         away_goals = self.total_away()
 
         if home_goals == 0 and away_goals == 0:
             await interaction.response.send_message(
-                "❌ Devi inserire almeno un marcatore prima di confermare.",
+                "❌ Devi inserire almeno un marcatore prima di inviare il referto.",
                 ephemeral=True,
             )
             return
@@ -12405,19 +12812,21 @@ class GuidedScorerFlowView(discord.ui.View):
         await safe_defer(interaction, ephemeral=True, thinking=True)
 
         try:
-            match = save_unified_result_and_sync(
-                self.match["source_table"],
-                self.match["id"],
-                home_goals,
-                away_goals,
-                self.home_scorers,
-                self.away_scorers,
+            pending_id = create_pending_result(
+                self.match,
+                submitted_by=str(interaction.user.id),
+                home_goals=home_goals,
+                away_goals=away_goals,
+                home_scorers=self.home_scorers,
+                away_scorers=self.away_scorers,
             )
+            dm_ok = await notify_opponent_for_pending_result(interaction.guild, pending_id)
 
             await interaction.followup.send(
                 (
-                    "✅ Risultato confermato e sincronizzato col sito.\n"
-                    f"**{match['home_club']} {home_goals} - {away_goals} {match['away_club']}**"
+                    "✅ Referto inviato all'avversario per la conferma.\n"
+                    f"**{self.match['home_club']} {home_goals} - {away_goals} {self.match['away_club']}**\n"
+                    + ("📩 DM inviato correttamente." if dm_ok else "⚠️ Non sono riuscito a inviare il DM: avvisa lo staff o l'avversario.")
                 ),
                 ephemeral=True,
             )
@@ -12431,9 +12840,9 @@ class GuidedScorerFlowView(discord.ui.View):
                 pass
 
         except Exception as e:
-            print(f"[CONFIRM RESULT ERROR] {type(e).__name__}: {e}")
+            print(f"[REFERTI SEND ERROR] {type(e).__name__}: {e}")
             await interaction.followup.send(
-                f"❌ Errore conferma risultato: `{type(e).__name__}`",
+                f"❌ Errore invio referto: `{type(e).__name__}: {e}`",
                 ephemeral=True,
             )
 
@@ -12557,7 +12966,7 @@ async def risultato(interaction: discord.Interaction):
 
         if not options:
             await interaction.followup.send(
-                "❌ Non hai partite attive da inserire. Lo staff deve prima generare le competizioni e usare `/avvia_andata` o `/avvia_ritorno`.",
+                "❌ Non hai partite attive da inserire come squadra di casa. Solo il manager di casa può compilare il referto.",
                 ephemeral=True
             )
             return
@@ -12565,9 +12974,9 @@ async def risultato(interaction: discord.Interaction):
         embed = discord.Embed(
             title="⚽ Inserisci risultato",
             description=(
-                "Scegli la competizione a cui stai partecipando.\n\n"
-                "Poi selezioni la partita attiva e aggiungi i marcatori dai menu.\n"
-                "Il risultato viene calcolato automaticamente dai gol inseriti."
+                "Scegli la competizione in cui devi giocare da squadra di casa.\n\n"
+                "Poi selezioni la partita attiva e aggiungi i marcatori casa/trasferta dai menu.\n"
+                "Il risultato viene calcolato automaticamente dai gol inseriti e verrà inviato all’avversario per conferma."
             ),
             color=discord.Color.blue(),
         )
@@ -13728,7 +14137,7 @@ async def publish_confirmed_result_to_results_channel(source_table, source_match
         conn.close()
         if not row:
             return False
-        channel = bot.get_channel(int(RESULTS_CHANNEL_ID)) or await bot.fetch_channel(int(RESULTS_CHANNEL_ID))
+        channel = bot.get_channel(int(OFFICIAL_RESULTS_CHANNEL_ID)) or await bot.fetch_channel(int(OFFICIAL_RESULTS_CHANNEL_ID))
         await channel.send(embed=_result_embed_from_match_result(row))
         return True
     except Exception as e:
