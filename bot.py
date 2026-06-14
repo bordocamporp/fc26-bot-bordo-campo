@@ -15791,6 +15791,7 @@ async def genera_accordi_partite(interaction: discord.Interaction, categoria: st
 
 # ================= FINE ACCORDI PARTITE =================
 
+
 class ResultsPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -15802,9 +15803,276 @@ class ResultsPanelView(discord.ui.View):
         custom_id="bc_panel_results_insert"
     )
     async def insert_result(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Usa la stessa procedura del comando /risultato:
-        # competizione -> partita -> gol/marcatori -> conferma avversario.
+        # In modalità FUT il comando /risultato usa il flusso semplificato: solo risultato, niente marcatori.
         await risultato.callback(interaction)
+
+
+# ================= PANNELLI DINAMICI MODALITÀ FUT =================
+# In Torneo Classico FUT non esistono rose/marcatori nel database: calendario,
+# classifiche e statistiche vengono filtrati con una tendina dinamica per competizione.
+
+
+def _competition_key(name, ctype):
+    return f"{str(ctype or '').strip()}||{str(name or '').strip()}".lower()
+
+
+def _competition_label(name, ctype=None):
+    name = str(name or "Competizione").strip() or "Competizione"
+    ctype_norm = normalize_text(ctype or name)
+    if any(x in ctype_norm for x in ["champions", "europa", "conference", "europe"]):
+        emoji = "🌍"
+    elif "coppa" in ctype_norm or "cup" in ctype_norm:
+        emoji = "🏆"
+    elif "amiche" in ctype_norm or "friendly" in ctype_norm:
+        emoji = "🤝"
+    else:
+        emoji = "📊"
+    return f"{emoji} {name}"
+
+
+def get_user_fut_competitions(discord_id):
+    """Restituisce tutte le competizioni collegate al player in modalità FUT.
+
+    Fonte prioritaria: partite pendenti del calendario unificato.
+    Fallback: competizioni/classifiche già sincronizzate sul sito.
+    """
+    competitions = []
+    seen = set()
+
+    def add(name, ctype=None, kind="standings", description=None):
+        name = str(name or "Competizione").strip()
+        ctype = str(ctype or "Torneo FUT").strip()
+        if not name:
+            return
+        key = _competition_key(name, ctype)
+        if key in seen:
+            return
+        seen.add(key)
+        competitions.append({
+            "name": name,
+            "type": ctype,
+            "kind": kind or "standings",
+            "label": _competition_label(name, ctype),
+            "description": description or ctype or "Torneo FUT",
+        })
+
+    try:
+        for m in unified_pending_matches(discord_id=discord_id, only_user=True) or []:
+            add(m.get("competition_name"), m.get("competition_type"), "standings", m.get("round") or "Partite da giocare")
+    except Exception as e:
+        print(f"[FUT PANEL] Errore competizioni da calendario: {e}")
+
+    try:
+        for c in get_user_competitions_for_classifica(discord_id) or []:
+            add(c.get("name"), c.get("type"), c.get("kind") or "standings", c.get("description"))
+    except Exception as e:
+        print(f"[FUT PANEL] Errore competizioni da classifiche: {e}")
+
+    return competitions
+
+
+async def send_fut_competition_picker(interaction: discord.Interaction, action: str):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    comps = get_user_fut_competitions(interaction.user.id)
+    if not comps:
+        embed = discord.Embed(
+            title="🎮 Torneo FUT",
+            description=(
+                "Non risultano ancora competizioni FUT collegate alla tua squadra.\n\n"
+                f"🌐 **{SITE_PUBLIC_TEXT}**"
+            ),
+            color=discord.Color.dark_grey()
+        )
+        embed.set_footer(text="BordoCampo FC26 • FUT")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    title_map = {
+        "calendar": "📅 Calendario FUT",
+        "standings": "📊 Classifiche FUT",
+        "stats": "📈 Statistiche FUT",
+    }
+    desc_map = {
+        "calendar": "Scegli la competizione FUT di cui vuoi vedere il calendario.",
+        "standings": "Scegli la competizione FUT di cui vuoi vedere classifica o tabellone.",
+        "stats": "Scegli la competizione FUT di cui vuoi vedere statistiche senza marcatori.",
+    }
+    embed = discord.Embed(
+        title=title_map.get(action, "🎮 Competizioni FUT"),
+        description=f"{desc_map.get(action, 'Scegli una competizione.')}\n\n🌐 **{SITE_PUBLIC_TEXT}**",
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="Modalità Torneo Classico FUT • Selezione dinamica")
+    await interaction.followup.send(embed=embed, view=FutCompetitionSelectView(comps, action), ephemeral=True)
+
+
+class FutCompetitionSelect(discord.ui.Select):
+    def __init__(self, competitions, action: str):
+        self.competitions = competitions[:25]
+        self.action = action
+        options = []
+        for idx, comp in enumerate(self.competitions):
+            options.append(discord.SelectOption(
+                label=str(comp.get("name") or "Competizione")[:100],
+                value=str(idx),
+                description=str(comp.get("description") or comp.get("type") or "Torneo FUT")[:100]
+            ))
+        if not options:
+            options.append(discord.SelectOption(label="Nessuna competizione", value="none"))
+        super().__init__(
+            placeholder="Seleziona competizione FUT...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"bc_fut_competition_select_{action}"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "none":
+            await interaction.response.send_message("Nessuna competizione disponibile.", ephemeral=True)
+            return
+        comp = self.competitions[int(self.values[0])]
+        if self.action == "calendar":
+            await send_fut_calendar_for_competition(interaction, comp)
+        elif self.action == "standings":
+            await send_fut_standings_for_competition(interaction, comp)
+        elif self.action == "stats":
+            await send_fut_stats_for_competition(interaction, comp)
+        else:
+            await interaction.response.send_message("Azione non valida.", ephemeral=True)
+
+
+class FutCompetitionSelectView(discord.ui.View):
+    def __init__(self, competitions, action: str):
+        super().__init__(timeout=180)
+        self.add_item(FutCompetitionSelect(competitions, action))
+
+
+async def send_fut_calendar_for_competition(interaction: discord.Interaction, comp):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    name = str(comp.get("name") or "")
+    ctype = str(comp.get("type") or "")
+    try:
+        matches = unified_pending_matches(discord_id=interaction.user.id, only_user=True) or []
+    except Exception as e:
+        print(f"[FUT CALENDAR] Errore lettura calendario: {e}")
+        matches = []
+
+    filtered = [
+        m for m in matches
+        if str(m.get("competition_name") or "").lower() == name.lower()
+        and (not ctype or str(m.get("competition_type") or "").lower() == ctype.lower())
+    ]
+
+    embed = discord.Embed(title=f"📅 {name}", color=discord.Color.blurple())
+    if not filtered:
+        embed.description = "Non hai partite da disputare in questa competizione."
+    else:
+        lines = []
+        for m in filtered[:20]:
+            round_label = str(m.get("round") or "Turno")
+            leg = str(m.get("leg") or "").strip()
+            leg_text = f" • {leg}" if leg else ""
+            lines.append(
+                f"• **{m.get('home_club', 'Casa')}** vs **{m.get('away_club', 'Trasferta')}**\n"
+                f"  ↳ {round_label}{leg_text}"
+            )
+        embed.description = "\n".join(lines)
+    embed.add_field(name="🌐 Sito", value=SITE_PUBLIC_TEXT, inline=False)
+    embed.set_footer(text="BordoCampo FC26 • Calendario FUT")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+async def send_fut_standings_for_competition(interaction: discord.Interaction, comp):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    name = comp.get("name")
+    ctype = comp.get("type")
+    kind = comp.get("kind") or "standings"
+    try:
+        await asyncio.to_thread(ensure_site_standings_columns)
+    except Exception:
+        pass
+    try:
+        if kind == "bracket":
+            embed = build_bracket_embed(name)
+        else:
+            embed = build_standings_embed(ctype, name)
+        embed.add_field(name="🌐 Sito", value=SITE_PUBLIC_TEXT, inline=False)
+    except Exception as e:
+        print(f"[FUT STANDINGS] Errore: {e}")
+        embed = discord.Embed(
+            title=f"📊 {name}",
+            description="Classifica non disponibile per questa competizione.",
+            color=discord.Color.red()
+        )
+    embed.set_footer(text="BordoCampo FC26 • Classifiche FUT")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+def build_fut_stats_embed_for_competition(competition_name, competition_type=None):
+    """Statistiche FUT senza marcatori: attacco, difesa, punti e rendimento."""
+    conn = connect()
+    cur = conn.cursor()
+    rows = []
+    try:
+        cur.execute("""
+            SELECT club_name, played, wins, draws, losses, goals_for, goals_against, points
+            FROM standings
+            WHERE LOWER(COALESCE(competition_name,'')) = LOWER(%s)
+              AND (%s = '' OR LOWER(COALESCE(competition_type,'')) = LOWER(%s))
+            ORDER BY points DESC, goals_for - goals_against DESC, goals_for DESC, club_name ASC
+            LIMIT 30
+        """, (str(competition_name), str(competition_type or ""), str(competition_type or "")))
+        rows = cur.fetchall()
+    except Exception as e:
+        print(f"[FUT STATS] Errore lettura standings: {e}")
+        rows = []
+    finally:
+        conn.close()
+
+    embed = discord.Embed(
+        title=f"📈 Statistiche FUT — {competition_name}",
+        color=discord.Color.purple()
+    )
+
+    if not rows:
+        embed.description = "Statistiche non ancora disponibili. Verranno generate dopo i primi risultati confermati."
+        embed.add_field(name="Nota", value="In modalità FUT i marcatori non vengono registrati.", inline=False)
+    else:
+        attack = sorted(rows, key=lambda r: (safe_int(row_get(r, 'goals_for')), safe_int(row_get(r, 'points'))), reverse=True)[:5]
+        defense = sorted(rows, key=lambda r: (safe_int(row_get(r, 'goals_against')), -safe_int(row_get(r, 'points'))))[:5]
+        form = sorted(rows, key=lambda r: (safe_int(row_get(r, 'points')), safe_int(row_get(r, 'wins')), safe_int(row_get(r, 'goals_for'))), reverse=True)[:5]
+
+        embed.add_field(
+            name="🔥 Miglior attacco",
+            value="\n".join(f"**{idx}. {row_get(r, 'club_name', 'Club')}** — {safe_int(row_get(r, 'goals_for'))} gol" for idx, r in enumerate(attack, 1)) or "N/D",
+            inline=False
+        )
+        embed.add_field(
+            name="🛡️ Miglior difesa",
+            value="\n".join(f"**{idx}. {row_get(r, 'club_name', 'Club')}** — {safe_int(row_get(r, 'goals_against'))} subiti" for idx, r in enumerate(defense, 1)) or "N/D",
+            inline=False
+        )
+        embed.add_field(
+            name="📊 Rendimento",
+            value="\n".join(
+                f"**{idx}. {row_get(r, 'club_name', 'Club')}** — {safe_int(row_get(r, 'points'))} pt, "
+                f"{safe_int(row_get(r, 'wins'))}V/{safe_int(row_get(r, 'draws'))}N/{safe_int(row_get(r, 'losses'))}P"
+                for idx, r in enumerate(form, 1)
+            ) or "N/D",
+            inline=False
+        )
+        embed.add_field(name="Marcatori", value="Disattivati in modalità Torneo Classico FUT.", inline=False)
+
+    embed.add_field(name="🌐 Sito", value=SITE_PUBLIC_TEXT, inline=False)
+    embed.set_footer(text="BordoCampo FC26 • Statistiche FUT")
+    return embed
+
+
+async def send_fut_stats_for_competition(interaction: discord.Interaction, comp):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    embed = build_fut_stats_embed_for_competition(comp.get("name"), comp.get("type"))
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class CalendarPanelView(discord.ui.View):
@@ -15818,40 +16086,81 @@ class CalendarPanelView(discord.ui.View):
         custom_id="bc_panel_calendar_user"
     )
     async def show_calendar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if is_fut_classic_mode():
+            await send_fut_competition_picker(interaction, "calendar")
+            return
         await send_user_calendar_from_panel(interaction)
 
 
 class StandingsPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        if is_fut_classic_mode():
+            btn = discord.ui.Button(
+                label="SELEZIONA COMPETIZIONE FUT",
+                style=discord.ButtonStyle.primary,
+                emoji="🎮",
+                custom_id="bc_panel_fut_standings_select"
+            )
+            btn.callback = self.fut_standings_callback
+            self.add_item(btn)
+        else:
+            b1 = discord.ui.Button(label="CLASSIFICA CAMPIONATO", style=discord.ButtonStyle.success, emoji="📊", custom_id="bc_panel_standings_championship")
+            b2 = discord.ui.Button(label="CLASSIFICA COPPA EUROPEA", style=discord.ButtonStyle.primary, emoji="🌍", custom_id="bc_panel_standings_europe")
+            b3 = discord.ui.Button(label="TABELLONE COPPA NAZIONALE", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="bc_panel_standings_national_cup")
+            b1.callback = self.championship_standings_callback
+            b2.callback = self.european_standings_callback
+            b3.callback = self.national_cup_bracket_callback
+            self.add_item(b1)
+            self.add_item(b2)
+            self.add_item(b3)
 
-    @discord.ui.button(label="CLASSIFICA CAMPIONATO", style=discord.ButtonStyle.success, emoji="📊", custom_id="bc_panel_standings_championship")
-    async def championship_standings(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def fut_standings_callback(self, interaction: discord.Interaction):
+        await send_fut_competition_picker(interaction, "standings")
+
+    async def championship_standings_callback(self, interaction: discord.Interaction):
         await send_classifica_category_from_panel(interaction, "campionato")
 
-    @discord.ui.button(label="CLASSIFICA COPPA EUROPEA", style=discord.ButtonStyle.primary, emoji="🌍", custom_id="bc_panel_standings_europe")
-    async def european_standings(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def european_standings_callback(self, interaction: discord.Interaction):
         await send_classifica_category_from_panel(interaction, "europea")
 
-    @discord.ui.button(label="TABELLONE COPPA NAZIONALE", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="bc_panel_standings_national_cup")
-    async def national_cup_bracket(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def national_cup_bracket_callback(self, interaction: discord.Interaction):
         await send_classifica_category_from_panel(interaction, "nazionale")
 
 
 class StatsPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        if is_fut_classic_mode():
+            btn = discord.ui.Button(
+                label="STATISTICHE COMPETIZIONE FUT",
+                style=discord.ButtonStyle.primary,
+                emoji="📈",
+                custom_id="bc_panel_fut_stats_select"
+            )
+            btn.callback = self.fut_stats_callback
+            self.add_item(btn)
+        else:
+            b1 = discord.ui.Button(label="CAPOCANNONIERE CAMPIONATO", style=discord.ButtonStyle.success, emoji="⚽", custom_id="bc_panel_stats_championship")
+            b2 = discord.ui.Button(label="CAPOCANNONIERE COPPA EUROPEA", style=discord.ButtonStyle.primary, emoji="🌍", custom_id="bc_panel_stats_europe")
+            b3 = discord.ui.Button(label="CAPOCANNONIERE COPPA NAZIONALE", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="bc_panel_stats_national_cup")
+            b1.callback = self.championship_scorers_callback
+            b2.callback = self.european_scorers_callback
+            b3.callback = self.national_cup_scorers_callback
+            self.add_item(b1)
+            self.add_item(b2)
+            self.add_item(b3)
 
-    @discord.ui.button(label="CAPOCANNONIERE CAMPIONATO", style=discord.ButtonStyle.success, emoji="⚽", custom_id="bc_panel_stats_championship")
-    async def championship_scorers(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def fut_stats_callback(self, interaction: discord.Interaction):
+        await send_fut_competition_picker(interaction, "stats")
+
+    async def championship_scorers_callback(self, interaction: discord.Interaction):
         await send_stats_category_from_panel(interaction, "campionato")
 
-    @discord.ui.button(label="CAPOCANNONIERE COPPA EUROPEA", style=discord.ButtonStyle.primary, emoji="🌍", custom_id="bc_panel_stats_europe")
-    async def european_scorers(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def european_scorers_callback(self, interaction: discord.Interaction):
         await send_stats_category_from_panel(interaction, "europea")
 
-    @discord.ui.button(label="CAPOCANNONIERE COPPA NAZIONALE", style=discord.ButtonStyle.secondary, emoji="🏆", custom_id="bc_panel_stats_national_cup")
-    async def national_cup_scorers(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def national_cup_scorers_callback(self, interaction: discord.Interaction):
         await send_stats_category_from_panel(interaction, "nazionale")
 
 
