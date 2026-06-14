@@ -14947,8 +14947,49 @@ async def publish_confirmed_result_to_results_channel(source_table, source_match
         return False
 
 
+def _panel_message_setting_key(panel_type, competition_name, competition_type):
+    """Chiave stabile per salvare l'ID del messaggio pannello in league_settings."""
+    raw = f"{panel_type}:{competition_type}:{competition_name}"
+    safe = normalize_text(raw).replace(" ", "_")
+    safe = "".join(ch for ch in safe if ch.isalnum() or ch in "_:.-")
+    return f"panel_message:{safe}"[:240]
+
+
+async def send_or_edit_panel_message(channel_id, setting_key, embed, *, view=None):
+    """Aggiorna un messaggio pannello esistente; se manca, lo crea e salva l'ID.
+
+    Serve per evitare che i canali Classifiche e Statistiche si riempiano
+    di nuovi messaggi ad ogni risultato confermato.
+    """
+    channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+    message_id = None
+    try:
+        message_id = get_setting_value(setting_key)
+    except Exception:
+        message_id = None
+
+    if message_id:
+        try:
+            msg = await channel.fetch_message(int(message_id))
+            await msg.edit(embed=embed, view=view)
+            return True
+        except Exception as e:
+            print(f"[PANEL EDIT] Messaggio non modificabile o non trovato ({setting_key}={message_id}): {type(e).__name__}: {e}")
+
+    msg = await channel.send(embed=embed, view=view)
+    try:
+        set_setting_value(setting_key, str(msg.id))
+    except Exception as e:
+        print(f"[PANEL EDIT] Errore salvataggio message_id {setting_key}: {e}")
+    return True
+
+
 async def publish_updated_panels_after_result(source_table, source_match_id, *, kind='championship'):
-    """Dopo risultato confermato pubblica classifica/tabellone e statistiche aggiornate nei canali dedicati."""
+    """Dopo risultato confermato aggiorna classifica/tabellone e statistiche nei canali dedicati.
+
+    Non invia più un messaggio nuovo ogni volta: modifica il messaggio già salvato
+    per quella specifica competizione. Se il messaggio non esiste ancora, lo crea.
+    """
     try:
         conn = connect()
         cur = conn.cursor()
@@ -14963,29 +15004,41 @@ async def publish_updated_panels_after_result(source_table, source_match_id, *, 
         conn.close()
         if not mr:
             return False
+
         comp_name = row_get(mr, 'competition_name', 'Competizione')
         comp_type = row_get(mr, 'competition_type', 'Competizione')
-
-        standings_channel = bot.get_channel(int(STANDINGS_CHANNEL_ID)) or await bot.fetch_channel(int(STANDINGS_CHANNEL_ID))
-        stats_channel = bot.get_channel(int(STATS_CHANNEL_ID)) or await bot.fetch_channel(int(STATS_CHANNEL_ID))
+        comp_type_norm = normalize_text(comp_type)
 
         try:
-            if normalize_text(comp_type).find('coppa nazionale') >= 0 or kind == 'national_cup':
+            if comp_type_norm.find('coppa nazionale') >= 0 or kind == 'national_cup':
                 emb = build_bracket_embed(comp_name)
             else:
                 emb = build_standings_embed(comp_type, comp_name)
             emb.title = f"🔄 Aggiornamento • {emb.title}"
-            await standings_channel.send(embed=emb)
+            await send_or_edit_panel_message(
+                STANDINGS_CHANNEL_ID,
+                _panel_message_setting_key('standings', comp_name, comp_type),
+                emb
+            )
         except Exception as e:
-            print(f"[CLASSIFICA AUTO POST] Errore: {e}")
+            print(f"[CLASSIFICA AUTO UPDATE] Errore: {e}")
 
         try:
-            category = 'nazionale' if normalize_text(comp_type).find('coppa nazionale') >= 0 else ('europea' if any(x in normalize_text(comp_type + ' ' + comp_name) for x in ['europe', 'champions', 'europa', 'conference']) else 'campionato')
-            stats_emb = build_top_scorers_embed_for_competition(category, competition_name=comp_name, competition_type=comp_type)
+            if is_fut_classic_mode():
+                stats_emb = build_fut_stats_embed_for_competition(comp_name, comp_type)
+            else:
+                category = 'nazionale' if comp_type_norm.find('coppa nazionale') >= 0 else (
+                    'europea' if any(x in normalize_text(comp_type + ' ' + comp_name) for x in ['europe', 'champions', 'europa', 'conference']) else 'campionato'
+                )
+                stats_emb = build_top_scorers_embed_for_competition(category, competition_name=comp_name, competition_type=comp_type)
             stats_emb.title = f"🔄 Aggiornamento • {stats_emb.title}"
-            await stats_channel.send(embed=stats_emb)
+            await send_or_edit_panel_message(
+                STATS_CHANNEL_ID,
+                _panel_message_setting_key('stats', comp_name, comp_type),
+                stats_emb
+            )
         except Exception as e:
-            print(f"[STATISTICHE AUTO POST] Errore: {e}")
+            print(f"[STATISTICHE AUTO UPDATE] Errore: {e}")
         return True
     except Exception as e:
         print(f"[PANNELLI POST RESULT] Errore: {type(e).__name__}: {e}")
