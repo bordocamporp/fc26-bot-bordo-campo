@@ -7731,7 +7731,7 @@ def fetch_player_by_id(player_id):
     return row
 
 
-def make_trade_embed(trade_id, proposer_id, target_id, request_player_id, offer_player_id=None, credits_to_target=0, credits_to_proposer=0, title="🔁 Nuova proposta di scambio"):
+def make_trade_embed(trade_id, proposer_id, target_id, request_player_id, offer_player_id=None, credits_to_target=0, credits_to_proposer=0, title="🔁 Nuova proposta di scambio", trade_type=None):
     proposer = fetch_manager_info(proposer_id)
     target = fetch_manager_info(target_id)
     requested = fetch_player_by_id(request_player_id)
@@ -7757,6 +7757,17 @@ def make_trade_embed(trade_id, proposer_id, target_id, request_player_id, offer_
         value=trade_player_line(requested) if requested else "Giocatore non trovato",
         inline=False
     )
+    trade_type_labels = {
+        "player_credits": "⚽ Giocatore + crediti",
+        "credits_only": "💰 Solo crediti",
+        "player_only": "⚽ Solo giocatore",
+    }
+    if trade_type:
+        embed.add_field(
+            name="📌 Tipologia scambio",
+            value=trade_type_labels.get(str(trade_type), str(trade_type)),
+            inline=False
+        )
     embed.add_field(
         name="🔄 Giocatore offerto",
         value=trade_player_line(offered) if offered else "Nessun giocatore offerto",
@@ -7849,6 +7860,7 @@ async def ensure_trade_offer_runtime_columns():
             "ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS public_message_id TEXT",
             "ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP",
             "ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP",
+            "ALTER TABLE trade_offers ADD COLUMN IF NOT EXISTS trade_type TEXT DEFAULT 'player_credits'",
             "CREATE INDEX IF NOT EXISTS idx_trade_offers_status_expires ON trade_offers(status, expires_at)",
         ]:
             try:
@@ -7989,7 +8001,7 @@ async def trade_auto_expire_loop():
         await asyncio.sleep(600)
 
 
-async def post_trade_offer(interaction, trade_id, proposer_id, target_id, request_player_id, offer_player_id, credits_to_target, credits_to_proposer=0, *, title="🔁 Nuova proposta di scambio"):
+async def post_trade_offer(interaction, trade_id, proposer_id, target_id, request_player_id, offer_player_id, credits_to_target, credits_to_proposer=0, *, title="🔁 Nuova proposta di scambio", trade_type=None):
     embed = make_trade_embed(
         trade_id,
         proposer_id,
@@ -7998,7 +8010,8 @@ async def post_trade_offer(interaction, trade_id, proposer_id, target_id, reques
         offer_player_id,
         credits_to_target,
         credits_to_proposer,
-        title=title
+        title=title,
+        trade_type=trade_type
     )
 
     channel = None
@@ -8133,21 +8146,21 @@ class TradeTargetPlayerSelect(discord.ui.Select):
 
         request_player_id = self.values[0]
         own_roster = fetch_roster_players(self.proposer_id)
-        if not own_roster:
-            await interaction.response.send_message("Non hai giocatori in rosa da usare per uno scambio.", ephemeral=True)
-            return
-
         requested = fetch_player_by_id(request_player_id)
         embed = discord.Embed(
-            title="🔁 Crea offerta",
+            title="🔁 Scegli tipologia di scambio",
             description=(
                 f"Giocatore richiesto: **{requested['name'] if requested else request_player_id}**\n\n"
-                "Ora scegli il giocatore da offrire oppure scegli **Nessun giocatore**. Dopo ti verrà chiesto il budget."
+                "Scegli che tipo di proposta vuoi fare:\n"
+                "⚽ **Giocatore + crediti**\n"
+                "💰 **Solo crediti**\n"
+                "⚽ **Solo giocatore**"
             ),
             color=discord.Color.orange()
         )
-        await interaction.response.edit_message(embed=embed, view=TradeOwnPlayerView(self.proposer_id, self.target_id, request_player_id, own_roster, page=0))
-
+        if not own_roster:
+            embed.set_footer(text="Non hai giocatori in rosa: potrai scegliere solo 'Solo crediti'.")
+        await interaction.response.edit_message(embed=embed, view=TradeTypeView(self.proposer_id, self.target_id, request_player_id, own_roster))
 
 class TradeTargetPlayerView(discord.ui.View):
     def __init__(self, proposer_id, target_id, players, page=0):
@@ -8174,65 +8187,241 @@ class TradeTargetPlayerView(discord.ui.View):
         await interaction.response.edit_message(view=TradeTargetPlayerView(self.proposer_id, self.target_id, self.players, min(self.max_page, self.page + 1)))
 
 
-class TradeOwnPlayerSelect(discord.ui.Select):
-    def __init__(self, proposer_id, target_id, request_player_id, players, page=0):
+
+class TradeTypeSelect(discord.ui.Select):
+    def __init__(self, proposer_id, target_id, request_player_id, own_roster):
         self.proposer_id = str(proposer_id)
         self.target_id = str(target_id)
         self.request_player_id = str(request_player_id)
-        self.players = players
+        self.own_roster = own_roster or []
+
+        options = []
+        if self.own_roster:
+            options.append(discord.SelectOption(
+                label="Giocatore + crediti",
+                value="player_credits",
+                emoji="🔁",
+                description="Offri un tuo giocatore più crediti"
+            ))
+        options.append(discord.SelectOption(
+            label="Solo crediti",
+            value="credits_only",
+            emoji="💰",
+            description="Offri solo budget per il giocatore richiesto"
+        ))
+        if self.own_roster:
+            options.append(discord.SelectOption(
+                label="Solo giocatore",
+                value="player_only",
+                emoji="⚽",
+                description="Offri solo un tuo giocatore, senza crediti"
+            ))
+
+        super().__init__(placeholder="Scegli la tipologia di scambio...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if str(interaction.user.id) != self.proposer_id:
+            await interaction.response.send_message("Questo menu non è tuo.", ephemeral=True)
+            return
+
+        trade_type = self.values[0]
+        if trade_type == "credits_only":
+            await interaction.response.send_modal(TradeBudgetModal(
+                self.proposer_id,
+                self.target_id,
+                self.request_player_id,
+                offer_player_id=None,
+                trade_type="credits_only"
+            ))
+            return
+
+        requested = fetch_player_by_id(self.request_player_id)
+        title = "🔁 Giocatore + crediti" if trade_type == "player_credits" else "⚽ Solo giocatore"
+        description = (
+            f"Giocatore richiesto: **{requested['name'] if requested else self.request_player_id}**\n\n"
+            "Ora scegli il tuo giocatore da offrire."
+        )
+        if trade_type == "player_credits":
+            description += " Dopo ti verrà chiesto quanti crediti aggiungere."
+        else:
+            description += " La proposta verrà creata senza crediti."
+
+        embed = discord.Embed(title=title, description=description, color=discord.Color.orange())
+        await interaction.response.edit_message(
+            embed=embed,
+            view=TradeOwnPlayerView(self.proposer_id, self.target_id, self.request_player_id, self.own_roster, page=0, trade_type=trade_type)
+        )
+
+
+class TradeTypeView(discord.ui.View):
+    def __init__(self, proposer_id, target_id, request_player_id, own_roster):
+        super().__init__(timeout=300)
+        self.add_item(TradeTypeSelect(proposer_id, target_id, request_player_id, own_roster))
+
+
+class TradeOwnPlayerSelect(discord.ui.Select):
+    def __init__(self, proposer_id, target_id, request_player_id, players, page=0, trade_type="player_credits"):
+        self.proposer_id = str(proposer_id)
+        self.target_id = str(target_id)
+        self.request_player_id = str(request_player_id)
+        self.players = players or []
         self.page = page
-        chunk = players[page * (TRADE_PAGE_SIZE - 1):page * (TRADE_PAGE_SIZE - 1) + (TRADE_PAGE_SIZE - 1)]
-        options = [discord.SelectOption(label="Nessun giocatore", description="Offri solo budget", value="none")]
-        options.extend(discord.SelectOption(
+        self.trade_type = str(trade_type or "player_credits")
+        chunk = self.players[page * TRADE_PAGE_SIZE:(page + 1) * TRADE_PAGE_SIZE]
+        options = [discord.SelectOption(
             label=str(p['name'])[:100],
             description=f"{p['position']} • OVR {p['overall']} • {p['team']}"[:100],
             value=str(p['id'])
-        ) for p in chunk)
+        ) for p in chunk]
+        if not options:
+            options = [discord.SelectOption(label="Nessun giocatore disponibile", value="none", description="Non hai giocatori da offrire")]
         super().__init__(placeholder="Scegli il tuo giocatore da offrire...", min_values=1, max_values=1, options=options)
 
     async def callback(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.proposer_id:
             await interaction.response.send_message("Questo menu non è tuo.", ephemeral=True)
             return
-        offer_player_id = None if self.values[0] == "none" else self.values[0]
-        await interaction.response.send_modal(TradeBudgetModal(self.proposer_id, self.target_id, self.request_player_id, offer_player_id))
+        if self.values[0] == "none":
+            await interaction.response.send_message("Non hai giocatori disponibili da offrire.", ephemeral=True)
+            return
+
+        offer_player_id = self.values[0]
+
+        if self.trade_type == "player_only":
+            await safe_defer(interaction, ephemeral=True, thinking=True)
+            trade_id = await create_trade_offer_and_post(
+                interaction,
+                self.proposer_id,
+                self.target_id,
+                self.request_player_id,
+                offer_player_id=offer_player_id,
+                credits=0,
+                trade_type="player_only"
+            )
+            if trade_id:
+                await interaction.followup.send("✅ Offerta solo giocatore inviata nel canale scambi/aste.", ephemeral=True)
+            return
+
+        await interaction.response.send_modal(TradeBudgetModal(
+            self.proposer_id,
+            self.target_id,
+            self.request_player_id,
+            offer_player_id,
+            trade_type="player_credits"
+        ))
 
 
 class TradeOwnPlayerView(discord.ui.View):
-    def __init__(self, proposer_id, target_id, request_player_id, players, page=0):
+    def __init__(self, proposer_id, target_id, request_player_id, players, page=0, trade_type="player_credits"):
         super().__init__(timeout=300)
         self.proposer_id = str(proposer_id)
         self.target_id = str(target_id)
         self.request_player_id = str(request_player_id)
-        self.players = players
+        self.players = players or []
         self.page = page
-        self.max_page = max(0, (len(players) - 1) // (TRADE_PAGE_SIZE - 1))
-        self.add_item(TradeOwnPlayerSelect(proposer_id, target_id, request_player_id, players, page))
+        self.trade_type = str(trade_type or "player_credits")
+        self.max_page = max(0, (len(self.players) - 1) // TRADE_PAGE_SIZE)
+        self.add_item(TradeOwnPlayerSelect(proposer_id, target_id, request_player_id, self.players, page, self.trade_type))
 
     @discord.ui.button(label="⬅️", style=discord.ButtonStyle.secondary)
     async def previous_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.proposer_id:
             await interaction.response.send_message("Questo menu non è tuo.", ephemeral=True)
             return
-        await interaction.response.edit_message(view=TradeOwnPlayerView(self.proposer_id, self.target_id, self.request_player_id, self.players, max(0, self.page - 1)))
+        await interaction.response.edit_message(view=TradeOwnPlayerView(self.proposer_id, self.target_id, self.request_player_id, self.players, max(0, self.page - 1), self.trade_type))
 
     @discord.ui.button(label="➡️", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         if str(interaction.user.id) != self.proposer_id:
             await interaction.response.send_message("Questo menu non è tuo.", ephemeral=True)
             return
-        await interaction.response.edit_message(view=TradeOwnPlayerView(self.proposer_id, self.target_id, self.request_player_id, self.players, min(self.max_page, self.page + 1)))
+        await interaction.response.edit_message(view=TradeOwnPlayerView(self.proposer_id, self.target_id, self.request_player_id, self.players, min(self.max_page, self.page + 1), self.trade_type))
 
+
+async def create_trade_offer_and_post(interaction, proposer_id, target_id, request_player_id, offer_player_id=None, credits=0, trade_type="player_credits"):
+    proposer_id = str(proposer_id)
+    target_id = str(target_id)
+    request_player_id = str(request_player_id)
+    offer_player_id = str(offer_player_id) if offer_player_id else None
+    credits = safe_int(credits)
+    trade_type = str(trade_type or "player_credits")
+
+    if trade_type == "credits_only":
+        offer_player_id = None
+        if credits <= 0:
+            await interaction.followup.send("Per uno scambio solo crediti devi offrire almeno 1 credito.", ephemeral=True)
+            return None
+    elif trade_type == "player_only":
+        credits = 0
+        if not offer_player_id:
+            await interaction.followup.send("Per uno scambio solo giocatore devi scegliere un tuo giocatore da offrire.", ephemeral=True)
+            return None
+    else:
+        if not offer_player_id and credits <= 0:
+            await interaction.followup.send("Devi offrire almeno un giocatore o un budget maggiore di 0.", ephemeral=True)
+            return None
+
+    proposer = fetch_manager_info(proposer_id)
+    if not proposer:
+        await interaction.followup.send("Non sei registrato come manager.", ephemeral=True)
+        return None
+    if safe_int(proposer['budget']) < credits:
+        await interaction.followup.send("Budget insufficiente.", ephemeral=True)
+        return None
+
+    await ensure_trade_offer_runtime_columns()
+
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO trade_offers
+            (proposer_id, proposer_name, target_id, target_name, offer_player_id, request_player_id, credits_to_target, credits_to_proposer, trade_type, status)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 0, %s, 'pending')
+            RETURNING id
+        """, (
+            proposer_id,
+            interaction.user.display_name,
+            target_id,
+            str(target_id),
+            offer_player_id,
+            request_player_id,
+            credits,
+            trade_type
+        ))
+        row = cur.fetchone()
+        trade_id = row['id'] if isinstance(row, dict) or hasattr(row, 'get') else row[0]
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[TRADE CREATE] Errore creazione offerta: {e}")
+        await interaction.followup.send("❌ Errore durante la creazione dell'offerta. Riprova.", ephemeral=True)
+        return None
+    finally:
+        conn.close()
+
+    await post_trade_offer(
+        interaction,
+        trade_id,
+        proposer_id,
+        target_id,
+        request_player_id,
+        offer_player_id,
+        credits,
+        trade_type=trade_type
+    )
+    return trade_id
 
 class TradeBudgetModal(discord.ui.Modal, title="Budget offerto"):
-    budget = discord.ui.TextInput(label="Budget da offrire", placeholder="Scrivi 0 se offri solo un giocatore", required=True, max_length=8)
+    budget = discord.ui.TextInput(label="Budget da offrire", placeholder="Esempio: 50", required=True, max_length=8)
 
-    def __init__(self, proposer_id, target_id, request_player_id, offer_player_id=None):
+    def __init__(self, proposer_id, target_id, request_player_id, offer_player_id=None, trade_type="player_credits"):
         super().__init__()
         self.proposer_id = str(proposer_id)
         self.target_id = str(target_id)
         self.request_player_id = str(request_player_id)
         self.offer_player_id = str(offer_player_id) if offer_player_id else None
+        self.trade_type = str(trade_type or "player_credits")
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -8246,50 +8435,21 @@ class TradeBudgetModal(discord.ui.Modal, title="Budget offerto"):
             return
         credits = int(raw_budget)
 
-        if not self.offer_player_id and credits <= 0:
-            await interaction.followup.send("Devi offrire almeno un giocatore o un budget maggiore di 0.", ephemeral=True)
+        if self.trade_type in {"credits_only", "player_credits"} and credits <= 0:
+            await interaction.followup.send("Per questa tipologia devi offrire almeno 1 credito.", ephemeral=True)
             return
 
-        proposer = fetch_manager_info(self.proposer_id)
-        if not proposer:
-            await interaction.followup.send("Non sei registrato come manager.", ephemeral=True)
-            return
-        if safe_int(proposer['budget']) < credits:
-            await interaction.followup.send("Budget insufficiente.", ephemeral=True)
-            return
-
-        await ensure_trade_offer_runtime_columns()
-
-        conn = connect()
-        cur = conn.cursor()
-        try:
-            cur.execute("""
-                INSERT INTO trade_offers
-                (proposer_id, proposer_name, target_id, target_name, offer_player_id, request_player_id, credits_to_target, credits_to_proposer, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 0, 'pending')
-                RETURNING id
-            """, (
-                self.proposer_id,
-                interaction.user.display_name,
-                self.target_id,
-                str(self.target_id),
-                self.offer_player_id,
-                self.request_player_id,
-                credits
-            ))
-            row = cur.fetchone()
-            trade_id = row['id'] if isinstance(row, dict) or hasattr(row, 'get') else row[0]
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            print(f"[TRADE MODAL] Errore creazione offerta: {e}")
-            await interaction.followup.send("❌ Errore durante la creazione dell'offerta. Riprova.", ephemeral=True)
-            return
-        finally:
-            conn.close()
-
-        await post_trade_offer(interaction, trade_id, self.proposer_id, self.target_id, self.request_player_id, self.offer_player_id, credits)
-        await interaction.followup.send("✅ Offerta inviata nel canale scambi/aste.", ephemeral=True)
+        trade_id = await create_trade_offer_and_post(
+            interaction,
+            self.proposer_id,
+            self.target_id,
+            self.request_player_id,
+            offer_player_id=self.offer_player_id,
+            credits=credits,
+            trade_type=self.trade_type
+        )
+        if trade_id:
+            await interaction.followup.send("✅ Offerta inviata nel canale scambi/aste.", ephemeral=True)
 
 
 class CounterOfferModal(discord.ui.Modal, title="Controfferta"):
