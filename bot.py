@@ -50,8 +50,8 @@ SIGNUP_REGISTERED_ROLE_ID = LEAGUE_PLAYER_ROLE_ID    # 1505181066695016619
 
 # Ruoli autorizzati a gestire ACCETTA/RIFIUTA e assegnazione club
 SIGNUP_STAFF_ROLE_IDS = {
-    "1398342848436240434",
-    "1398358193197027408",
+    "1498341567105339492",
+    "1514358410441654474",
 }
 
 # Club e campionati NON sono più hardcoded nel file.
