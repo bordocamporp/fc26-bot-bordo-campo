@@ -13593,7 +13593,7 @@ async def publish_updated_panels_after_result(source_table, source_match_id, *, 
 @tree.command(name="genera_accordi_partite", description="Staff: crea i thread accordi per tutte le partite da giocare")
 @app_commands.describe(categoria="Opzionale: Campionati, Coppe Nazionali, Coppe Europee o Amichevoli")
 async def genera_accordi_partite(interaction: discord.Interaction, categoria: str = None):
-    if not is_league_admin(interaction):
+    if not can_use_normal_staff(interaction.user):
         await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
         return
     await safe_defer(interaction, ephemeral=True, thinking=True)
