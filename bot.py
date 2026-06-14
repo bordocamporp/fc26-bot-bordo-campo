@@ -31,11 +31,13 @@ SCAMBI_CHANNEL_ID = "1514358653254107136"
 REQUEST_ROLE_ID = "1398323695558332604"
 PRE_ISCRITTO_ROLE_ID = "1514358448865935572"
 
-RESULTS_CHANNEL_ID = "1514358659470069991"
+RESULTS_CHANNEL_ID = "1515766439796015316"
 STANDINGS_CHANNEL_ID = "1514358660598464586"
 STATS_CHANNEL_ID = "1514358662020468987"
 CALENDAR_CHANNEL_ID = "1514358657989611591"
 AGREEMENTS_CHANNEL_ID = "1515743432340148454"  # accordi partite
+MATCH_DEADLINE_STAFF_CHANNEL_ID = "1515771459317010462"  # avvisi staff partite non giocate
+MATCH_DEADLINE_HOURS = int(os.getenv("MATCH_DEADLINE_HOURS", "72"))
 LEAGUE_PLAYER_ROLE_ID = "1398332847655358554"
 LEAGUE_ADMIN_ROLE_ID = "1398342848436240434"
 
@@ -332,7 +334,7 @@ BOT_ONLY_BYPASS_ROLE_IDS = {
 
 BOT_ONLY_CHANNELS = {
     1514358657989611591,  # calendario
-    1515766439796015316,  # risultati
+    1514358659470069991,  # risultati
     1514358660598464586,  # classifiche
     1514358662020468987,  # statistiche
     1514358651115278436,  # asta
@@ -3600,6 +3602,19 @@ async def libera_club(interaction: discord.Interaction, utente: discord.Member):
     club_name = club["name"]
     league_name = club["league"] or "N/D"
 
+    try:
+        record_club_history_event(
+            club_name=club_name,
+            old_manager_id=str(utente.id),
+            old_manager_name=str(utente.display_name),
+            new_manager_id=None,
+            new_manager_name=None,
+            event_type="club_released",
+            notes=f"Club liberato dallo staff da {interaction.user} ({interaction.user.id})"
+        )
+    except Exception as e:
+        print(f"[CLUB HISTORY] Errore storico libera_club: {e}")
+
     cur.execute("""
         UPDATE fc26_clubs
         SET assigned_to = NULL,
@@ -5322,6 +5337,14 @@ async def on_ready():
             print("[CLASSIFICHE AUTO SYNC] Loop automatico avviato.")
     except Exception as e:
         print(f"[CLASSIFICHE AUTO SYNC] Avvio loop fallito: {e}")
+
+    try:
+        if not getattr(bot, "_deadline_watch_task_started", False):
+            bot.loop.create_task(match_deadline_watch_loop())
+            bot._deadline_watch_task_started = True
+            print("[SCADENZE PARTITE] Loop avvisi staff/player avviato.")
+    except Exception as e:
+        print(f"[SCADENZE PARTITE] Avvio loop fallito: {e}")
 
     print(f"Bot online come {bot.user}")
 
@@ -15606,6 +15629,750 @@ async def setup_canali_bcfc(interaction: discord.Interaction):
     except Exception as e:
         print(f"[SETUP CANALI BCFC] Errore: {type(e).__name__}: {e}")
         await safe_send(interaction, f"❌ Errore setup canali: `{type(e).__name__}: {e}`", ephemeral=True)
+
+
+
+# ================= MIGLIORAMENTI BOT: STAFF PANEL / ANNULLA RISULTATO / SANZIONI / STORICO CLUB / SCADENZE / POWER RANKING =================
+
+async def _bcfc_get_channel(channel_id, guild=None):
+    try:
+        channel = guild.get_channel(int(channel_id)) if guild else None
+        if not channel:
+            channel = bot.get_channel(int(channel_id))
+        if not channel:
+            channel = await bot.fetch_channel(int(channel_id))
+        return channel
+    except Exception as e:
+        print(f"[BCFC CHANNEL] Canale non trovato {channel_id}: {e}")
+        return None
+
+
+def ensure_bcfc_enhancement_tables():
+    """Crea/aggiorna le tabelle per le funzioni avanzate aggiunte al bot."""
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sanctions (
+                id SERIAL PRIMARY KEY,
+                discord_id TEXT NOT NULL,
+                manager_name TEXT,
+                club_name TEXT,
+                sanction_type TEXT NOT NULL,
+                amount INTEGER DEFAULT 0,
+                competition_name TEXT,
+                reason TEXT,
+                created_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS club_history (
+                id SERIAL PRIMARY KEY,
+                club_name TEXT NOT NULL,
+                old_manager_id TEXT,
+                old_manager_name TEXT,
+                new_manager_id TEXT,
+                new_manager_name TEXT,
+                event_type TEXT DEFAULT 'event',
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        try:
+            cur.execute("ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS deadline_at TIMESTAMP")
+            cur.execute("ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS notified_overdue BOOLEAN DEFAULT FALSE")
+            cur.execute("ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS last_deadline_notice_at TIMESTAMP")
+        except Exception:
+            pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_sanctions_discord ON sanctions(discord_id)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_club_history_club ON club_history(club_name)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_match_agreement_deadline ON match_agreement_threads(status, notified_overdue, created_at)")
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[BCFC ENHANCE] Errore ensure tabelle: {e}")
+    finally:
+        conn.close()
+
+
+def record_club_history_event(club_name, old_manager_id=None, old_manager_name=None, new_manager_id=None, new_manager_name=None, event_type="event", notes=None):
+    ensure_bcfc_enhancement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO club_history
+                (club_name, old_manager_id, old_manager_name, new_manager_id, new_manager_name, event_type, notes)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            str(club_name or ""),
+            str(old_manager_id) if old_manager_id else None,
+            str(old_manager_name) if old_manager_name else None,
+            str(new_manager_id) if new_manager_id else None,
+            str(new_manager_name) if new_manager_name else None,
+            str(event_type or "event"),
+            str(notes or "")
+        ))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[CLUB HISTORY] Errore record: {e}")
+    finally:
+        conn.close()
+
+
+def get_manager_club_name(discord_id):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT name FROM fc26_clubs WHERE assigned_to = %s LIMIT 1", (str(discord_id),))
+        row = cur.fetchone()
+        if row and row_get(row, 'name'):
+            return row_get(row, 'name')
+    except Exception:
+        pass
+    try:
+        cur.execute("SELECT club_name, manager_name, name FROM managers WHERE discord_id = %s LIMIT 1", (str(discord_id),))
+        row = cur.fetchone()
+        if row:
+            return row_get(row, 'club_name') or row_get(row, 'manager_name') or row_get(row, 'name')
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
+
+
+class StaffPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Giornate/Thread", style=discord.ButtonStyle.primary, emoji="📅", custom_id="bcfc_staff_threads_help")
+    async def threads_help(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "📅 **Giornate e accordi**\n"
+            "Usa `/genera_giornata` per pubblicare solo una giornata/fase.\n"
+            "Usa `/chiudi_giornata` per archiviare i thread della giornata.\n"
+            "Usa `/controlla_scadenze_partite` per avvisare staff e player sulle partite non giocate.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Risultati", style=discord.ButtonStyle.success, emoji="⚽", custom_id="bcfc_staff_results_help")
+    async def results_help(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "⚽ **Risultati**\n"
+            "I player usano il pannello risultati.\n"
+            "Usa `/annulla_risultato risultato_id:` per cancellare un risultato errato e ricalcolare le classifiche.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Disciplina", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="bcfc_staff_sanctions_help")
+    async def sanctions_help(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "⚠️ **Sanzioni**\n"
+            "Usa `/sanzione utente tipo importo motivo competizione_nome` per richiamo, penalità crediti o penalità punti.",
+            ephemeral=True
+        )
+
+    @discord.ui.button(label="Analisi", style=discord.ButtonStyle.secondary, emoji="📊", custom_id="bcfc_staff_analysis_help")
+    async def analysis_help(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "📊 **Analisi**\n"
+            "Usa `/power_ranking` per vedere i club più in forma sulle ultime partite.\n"
+            "Usa `/storico_club club:` per vedere cambi manager e passaggi del club.",
+            ephemeral=True
+        )
+
+
+@tree.command(name="staff_panel", description="Staff: pannello rapido gestione torneo")
+async def staff_panel(interaction: discord.Interaction):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title="🛡️ BC FC • Staff Panel",
+        description=(
+            "Pannello rapido per gestione torneo.\n\n"
+            "📅 Giornate/thread\n⚽ Risultati e annullamenti\n⚠️ Sanzioni\n📊 Storico club e power ranking"
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text="BordoCampo FC26 • Staff")
+    await interaction.response.send_message(embed=embed, view=StaffPanelView(), ephemeral=True)
+
+
+def recalculate_standings_from_match_results(competition_name, competition_type="Campionati"):
+    """Ricalcola standings leggendo solo risultati confermati in match_results."""
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT *
+            FROM match_results
+            WHERE competition_name = %s
+              AND competition_type = %s
+              AND COALESCE(status, 'played') = 'played'
+        """, (str(competition_name), str(competition_type)))
+        rows = cur.fetchall() or []
+        table = {}
+        for m in rows:
+            home = str(row_get(m, 'home_team', '') or '')
+            away = str(row_get(m, 'away_team', '') or '')
+            if not home or not away:
+                continue
+            table.setdefault(home, {"pg": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0})
+            table.setdefault(away, {"pg": 0, "w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "pts": 0})
+            hg = safe_int(row_get(m, 'home_score', 0))
+            ag = safe_int(row_get(m, 'away_score', 0))
+            table[home]["pg"] += 1
+            table[away]["pg"] += 1
+            table[home]["gf"] += hg
+            table[home]["ga"] += ag
+            table[away]["gf"] += ag
+            table[away]["ga"] += hg
+            if hg > ag:
+                table[home]["w"] += 1; table[away]["l"] += 1; table[home]["pts"] += 3
+            elif ag > hg:
+                table[away]["w"] += 1; table[home]["l"] += 1; table[away]["pts"] += 3
+            else:
+                table[home]["d"] += 1; table[away]["d"] += 1; table[home]["pts"] += 1; table[away]["pts"] += 1
+
+        cur.execute("DELETE FROM standings WHERE competition_name = %s AND competition_type = %s", (str(competition_name), str(competition_type)))
+        for club, r in table.items():
+            cur.execute("""
+                INSERT INTO standings
+                    (competition_name, competition_type, club_name, played, wins, draws, losses, goals_for, goals_against, points, updated_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+            """, (
+                str(competition_name), str(competition_type), club,
+                r["pg"], r["w"], r["d"], r["l"], r["gf"], r["ga"], r["pts"]
+            ))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"[ANNULLA RISULTATO] Errore ricalcolo standings: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def reset_source_match_after_result_cancel(source_table, source_match_id):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        table = str(source_table or '')
+        mid = str(source_match_id or '')
+        if table in {"championship_matches", "national_cup_matches", "friendly_matches"}:
+            cur.execute(f"""
+                UPDATE {table}
+                SET home_goals = NULL,
+                    away_goals = NULL,
+                    status = 'pending',
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (mid,))
+        elif table == "fixtures":
+            cur.execute("""
+                UPDATE fixtures
+                SET home_goals = NULL,
+                    away_goals = NULL,
+                    status = 'pending'
+                WHERE id = %s
+            """, (mid,))
+        try:
+            if table == "championship_matches":
+                cur.execute("DELETE FROM match_scorers WHERE match_id = %s", (mid,))
+        except Exception:
+            pass
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"[ANNULLA RISULTATO] Errore reset source {source_table}:{source_match_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+@tree.command(name="annulla_risultato", description="Staff: annulla un risultato confermato e ricalcola classifiche/statistiche")
+@app_commands.describe(risultato_id="ID nella tabella risultati ufficiali / match_results", motivo="Motivo dell'annullamento")
+async def annulla_risultato(interaction: discord.Interaction, risultato_id: int, motivo: str = "Risultato inserito in modo errato"):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT * FROM match_results WHERE id = %s LIMIT 1", (int(risultato_id),))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            await interaction.followup.send("❌ Risultato non trovato in `match_results`.", ephemeral=True)
+            return
+        source_table = row_get(row, 'source_table')
+        source_match_id = row_get(row, 'source_match_id')
+        competition_name = row_get(row, 'competition_name')
+        competition_type = row_get(row, 'competition_type')
+        home = row_get(row, 'home_team')
+        away = row_get(row, 'away_team')
+        score = f"{row_get(row, 'home_score')} - {row_get(row, 'away_score')}"
+        cur.execute("DELETE FROM match_results WHERE id = %s", (int(risultato_id),))
+        try:
+            cur.execute("DELETE FROM cup_matches WHERE source_table = %s AND source_match_id = %s", (str(source_table), str(source_match_id)))
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        await interaction.followup.send(f"❌ Errore annullamento: `{type(e).__name__}: {e}`", ephemeral=True)
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    reset_source_match_after_result_cancel(source_table, source_match_id)
+    if competition_name and competition_type:
+        recalculate_standings_from_match_results(competition_name, competition_type)
+
+    try:
+        await send_staff_log(
+            interaction.guild,
+            "↩️ Risultato annullato",
+            f"Risultato ID: `{risultato_id}`\nPartita: **{home} {score} {away}**\nCompetizione: **{competition_name}** ({competition_type})\nMotivo: {motivo}",
+            user=interaction.user,
+            color=discord.Color.orange()
+        )
+    except Exception:
+        pass
+
+    await interaction.followup.send(
+        f"✅ Risultato annullato.\n**{home} {score} {away}**\nClassifica ricalcolata per **{competition_name}**.",
+        ephemeral=True
+    )
+
+
+@tree.command(name="sanzione", description="Staff: assegna richiamo, penalità crediti o penalità punti")
+@app_commands.describe(
+    utente="Manager da sanzionare",
+    tipo="richiamo / crediti / punti",
+    importo="Importo penalità. Per richiamo può essere 0.",
+    motivo="Motivo della sanzione",
+    competizione_nome="Opzionale: competizione su cui applicare penalità punti"
+)
+async def sanzione(interaction: discord.Interaction, utente: discord.Member, tipo: str, importo: int = 0, motivo: str = "Sanzione staff", competizione_nome: str = None):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    ensure_bcfc_enhancement_tables()
+    tipo_norm = normalize_text(tipo)
+    club_name = get_manager_club_name(utente.id)
+    amount = max(0, safe_int(importo, 0))
+
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        if "credit" in tipo_norm and amount > 0:
+            cur.execute("UPDATE managers SET budget = GREATEST(COALESCE(budget,0) - %s, 0) WHERE discord_id = %s", (amount, str(utente.id)))
+        elif "punt" in tipo_norm and amount > 0:
+            if competizione_nome:
+                cur.execute("""
+                    UPDATE standings
+                    SET points = points - %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE LOWER(club_name) = LOWER(%s)
+                      AND LOWER(competition_name) = LOWER(%s)
+                """, (amount, str(club_name or utente.display_name), str(competizione_nome)))
+            else:
+                cur.execute("""
+                    UPDATE standings
+                    SET points = points - %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE LOWER(club_name) = LOWER(%s)
+                """, (amount, str(club_name or utente.display_name)))
+
+        cur.execute("""
+            INSERT INTO sanctions
+                (discord_id, manager_name, club_name, sanction_type, amount, competition_name, reason, created_by)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+        """, (
+            str(utente.id), str(utente.display_name), str(club_name or ""), str(tipo), amount,
+            str(competizione_nome or ""), str(motivo), str(interaction.user.id)
+        ))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        conn.close()
+        await interaction.followup.send(f"❌ Errore sanzione: `{type(e).__name__}: {e}`", ephemeral=True)
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    try:
+        await utente.send(
+            f"⚠️ **Sanzione BC FC**\n"
+            f"Tipo: **{tipo}**\n"
+            f"Importo: **{amount}**\n"
+            f"Club: **{club_name or 'N/D'}**\n"
+            f"Motivo: {motivo}"
+        )
+    except Exception:
+        pass
+
+    await send_staff_log(
+        interaction.guild,
+        "⚠️ Sanzione applicata",
+        f"Player: {utente.mention} (`{utente.id}`)\nClub: **{club_name or 'N/D'}**\nTipo: **{tipo}**\nImporto: **{amount}**\nMotivo: {motivo}",
+        user=interaction.user,
+        color=discord.Color.red()
+    )
+    await interaction.followup.send("✅ Sanzione registrata e comunicata al player.", ephemeral=True)
+
+
+@tree.command(name="storico_club", description="Mostra lo storico manager/eventi di un club")
+@app_commands.describe(club="Nome club da cercare")
+async def storico_club(interaction: discord.Interaction, club: str):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    ensure_bcfc_enhancement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT *
+            FROM club_history
+            WHERE LOWER(club_name) LIKE LOWER(%s)
+            ORDER BY created_at DESC
+            LIMIT 15
+        """, (f"%{club}%",))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        rows = []
+        print(f"[CLUB HISTORY] Errore storico_club: {e}")
+    finally:
+        conn.close()
+
+    if not rows:
+        await interaction.followup.send("📜 Nessuno storico trovato per questo club.", ephemeral=True)
+        return
+
+    lines = []
+    for r in rows:
+        old_name = row_get(r, 'old_manager_name') or row_get(r, 'old_manager_id') or '-'
+        new_name = row_get(r, 'new_manager_name') or row_get(r, 'new_manager_id') or '-'
+        event = row_get(r, 'event_type', 'evento')
+        created = str(row_get(r, 'created_at', ''))[:16]
+        notes = row_get(r, 'notes', '')
+        lines.append(f"• `{created}` **{event}**\n  Vecchio: {old_name} → Nuovo: {new_name}\n  {notes}")
+
+    embed = discord.Embed(
+        title=f"📜 Storico club • {club}",
+        description="\n\n".join(lines)[:3900],
+        color=discord.Color.gold()
+    )
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="registra_storico_club", description="Staff: registra manualmente un evento nello storico di un club")
+@app_commands.describe(club="Club", evento="Tipo evento", note="Note evento", vecchio_manager="Vecchio manager", nuovo_manager="Nuovo manager")
+async def registra_storico_club(interaction: discord.Interaction, club: str, evento: str, note: str = "", vecchio_manager: discord.Member = None, nuovo_manager: discord.Member = None):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    record_club_history_event(
+        club_name=club,
+        old_manager_id=str(vecchio_manager.id) if vecchio_manager else None,
+        old_manager_name=vecchio_manager.display_name if vecchio_manager else None,
+        new_manager_id=str(nuovo_manager.id) if nuovo_manager else None,
+        new_manager_name=nuovo_manager.display_name if nuovo_manager else None,
+        event_type=evento,
+        notes=note
+    )
+    await interaction.response.send_message("✅ Evento storico club registrato.", ephemeral=True)
+
+
+def get_match_participants_by_source(source_table, source_match_id):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        table = str(source_table or '')
+        mid = str(source_match_id or '')
+        if table in {"championship_matches", "national_cup_matches", "friendly_matches"}:
+            cur.execute(f"""
+                SELECT home_id, away_id, home_name, away_name
+                FROM {table}
+                WHERE id = %s
+                LIMIT 1
+            """, (mid,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    "home_id": str(row_get(row, 'home_id', '') or ''),
+                    "away_id": str(row_get(row, 'away_id', '') or ''),
+                    "home_name": str(row_get(row, 'home_name', '') or ''),
+                    "away_name": str(row_get(row, 'away_name', '') or ''),
+                }
+        elif table == "fixtures":
+            cur.execute("""
+                SELECT home_user_id, away_user_id, home_club, away_club
+                FROM fixtures
+                WHERE id = %s
+                LIMIT 1
+            """, (mid,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    "home_id": str(row_get(row, 'home_user_id', '') or ''),
+                    "away_id": str(row_get(row, 'away_user_id', '') or ''),
+                    "home_name": str(row_get(row, 'home_club', '') or ''),
+                    "away_name": str(row_get(row, 'away_club', '') or ''),
+                }
+    except Exception as e:
+        print(f"[SCADENZE PARTITE] Errore participants {source_table}:{source_match_id}: {e}")
+    finally:
+        conn.close()
+    return {"home_id": "", "away_id": "", "home_name": "Casa", "away_name": "Trasferta"}
+
+
+async def notify_overdue_match(row, guild=None):
+    participants = get_match_participants_by_source(row_get(row, 'source_table'), row_get(row, 'source_match_id'))
+    home_id = participants.get('home_id')
+    away_id = participants.get('away_id')
+    home_name = participants.get('home_name') or 'Casa'
+    away_name = participants.get('away_name') or 'Trasferta'
+    comp = row_get(row, 'competition_name', 'Competizione')
+    ctype = row_get(row, 'competition_type', '')
+    round_label = row_get(row, 'round_label', 'Turno')
+    thread_id = row_get(row, 'thread_id')
+    staff_channel = await _bcfc_get_channel(MATCH_DEADLINE_STAFF_CHANNEL_ID, guild)
+    mentions = " ".join(f"<@{x}>" for x in [home_id, away_id] if x)
+
+    if staff_channel:
+        embed = discord.Embed(
+            title="⏰ Partita non giocata / accordo scaduto",
+            description=(
+                f"**{home_name} vs {away_name}**\n"
+                f"Competizione: **{comp}** ({ctype})\n"
+                f"Giornata/Fase: **{round_label}**\n"
+                f"Thread: <#{thread_id}>\n\n"
+                f"Player coinvolti: {mentions or 'N/D'}"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.set_footer(text="BordoCampo FC26 • Avviso automatico scadenza partita")
+        await staff_channel.send(content=mentions if mentions else None, embed=embed)
+
+    dm_text = (
+        f"⏰ **Avviso partita BC FC**\n\n"
+        f"La partita **{home_name} vs {away_name}** risulta ancora non giocata o non confermata.\n"
+        f"Competizione: **{comp}**\n"
+        f"Giornata/Fase: **{round_label}**\n\n"
+        f"Scrivete nel thread accordi e organizzatevi il prima possibile. In caso di problemi contattate lo staff."
+    )
+    for uid in [home_id, away_id]:
+        if not uid:
+            continue
+        try:
+            user = await bot.fetch_user(int(uid))
+            await user.send(dm_text)
+        except Exception:
+            pass
+
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE match_agreement_threads
+            SET notified_overdue = TRUE,
+                last_deadline_notice_at = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (row_get(row, 'id'),))
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[SCADENZE PARTITE] Errore update notified: {e}")
+    finally:
+        conn.close()
+
+
+async def check_match_deadlines_once(guild=None):
+    ensure_bcfc_enhancement_tables()
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT *
+            FROM match_agreement_threads
+            WHERE COALESCE(status, 'open') = 'open'
+              AND COALESCE(notified_overdue, FALSE) = FALSE
+              AND thread_id IS NOT NULL
+              AND thread_id <> ''
+              AND (
+                    (deadline_at IS NOT NULL AND deadline_at <= CURRENT_TIMESTAMP)
+                 OR (deadline_at IS NULL AND created_at <= CURRENT_TIMESTAMP - (%s || ' hours')::interval)
+              )
+            ORDER BY created_at ASC
+            LIMIT 25
+        """, (str(MATCH_DEADLINE_HOURS),))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        rows = []
+        print(f"[SCADENZE PARTITE] Errore lettura scadenze: {e}")
+    finally:
+        conn.close()
+
+    sent = 0
+    for row in rows:
+        await notify_overdue_match(row, guild)
+        sent += 1
+        await asyncio.sleep(0.3)
+    return sent
+
+
+async def match_deadline_watch_loop():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+            count = await check_match_deadlines_once(guild)
+            if count:
+                print(f"[SCADENZE PARTITE] Avvisi inviati: {count}")
+        except Exception as e:
+            print(f"[SCADENZE PARTITE] Errore loop: {type(e).__name__}: {e}")
+        await asyncio.sleep(3600)
+
+
+@tree.command(name="controlla_scadenze_partite", description="Staff: controlla subito partite con thread accordi scaduti")
+async def controlla_scadenze_partite(interaction: discord.Interaction):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    count = await check_match_deadlines_once(interaction.guild)
+    await interaction.followup.send(
+        f"✅ Controllo scadenze completato. Avvisi inviati: **{count}**.\nCanale staff: <#{MATCH_DEADLINE_STAFF_CHANNEL_ID}>",
+        ephemeral=True
+    )
+
+
+@tree.command(name="imposta_scadenza_thread", description="Staff: imposta una scadenza in ore a tutti i thread aperti di una competizione/giornata")
+@app_commands.describe(competizione="Nome competizione", giornata="Giornata/fase", ore="Ore da ora alla scadenza")
+async def imposta_scadenza_thread(interaction: discord.Interaction, competizione: str, giornata: str, ore: int = 72):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    ensure_bcfc_enhancement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            UPDATE match_agreement_threads
+            SET deadline_at = CURRENT_TIMESTAMP + (%s || ' hours')::interval,
+                notified_overdue = FALSE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE COALESCE(status, 'open') = 'open'
+              AND LOWER(COALESCE(competition_name, '')) = LOWER(%s)
+              AND LOWER(COALESCE(round_label, '')) = LOWER(%s)
+        """, (str(max(1, safe_int(ore, 72))), str(competizione), str(giornata)))
+        updated = cur.rowcount or 0
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        updated = 0
+        print(f"[SCADENZE PARTITE] Errore imposta scadenza: {e}")
+    finally:
+        conn.close()
+    await interaction.response.send_message(f"✅ Scadenza impostata su **{updated}** thread aperti.", ephemeral=True)
+
+
+@tree.command(name="power_ranking", description="Mostra il power ranking dei club più in forma")
+@app_commands.describe(competizione="Opzionale: filtra per nome competizione", ultime="Numero massimo risultati recenti da considerare")
+async def power_ranking(interaction: discord.Interaction, competizione: str = None, ultime: int = 40):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    limit = max(5, min(safe_int(ultime, 40), 100))
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        if competizione:
+            cur.execute("""
+                SELECT *
+                FROM match_results
+                WHERE COALESCE(status, 'played') = 'played'
+                  AND LOWER(competition_name) LIKE LOWER(%s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+            """, (f"%{competizione}%", limit))
+        else:
+            cur.execute("""
+                SELECT *
+                FROM match_results
+                WHERE COALESCE(status, 'played') = 'played'
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+            """, (limit,))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        rows = []
+        print(f"[POWER RANKING] Errore lettura: {e}")
+    finally:
+        conn.close()
+
+    if not rows:
+        await interaction.followup.send("📊 Nessun risultato confermato disponibile per il power ranking.", ephemeral=True)
+        return
+
+    ranking = {}
+    for m in rows:
+        home = str(row_get(m, 'home_team', '') or '')
+        away = str(row_get(m, 'away_team', '') or '')
+        if not home or not away:
+            continue
+        hg = safe_int(row_get(m, 'home_score', 0))
+        ag = safe_int(row_get(m, 'away_score', 0))
+        for club in [home, away]:
+            ranking.setdefault(club, {"played": 0, "pts": 0, "gf": 0, "ga": 0, "wins": 0})
+        ranking[home]["played"] += 1; ranking[away]["played"] += 1
+        ranking[home]["gf"] += hg; ranking[home]["ga"] += ag
+        ranking[away]["gf"] += ag; ranking[away]["ga"] += hg
+        if hg > ag:
+            ranking[home]["pts"] += 3; ranking[home]["wins"] += 1
+        elif ag > hg:
+            ranking[away]["pts"] += 3; ranking[away]["wins"] += 1
+        else:
+            ranking[home]["pts"] += 1; ranking[away]["pts"] += 1
+
+    ordered = sorted(
+        ranking.items(),
+        key=lambda x: (x[1]["pts"], x[1]["wins"], x[1]["gf"] - x[1]["ga"], x[1]["gf"]),
+        reverse=True
+    )[:15]
+    lines = []
+    medals = ["🥇", "🥈", "🥉"]
+    for idx, (club, r) in enumerate(ordered, start=1):
+        icon = medals[idx-1] if idx <= 3 else f"**{idx}.**"
+        gd = r["gf"] - r["ga"]
+        lines.append(f"{icon} **{club}** — {r['pts']} pt, {r['wins']}V, DR {gd:+}, GF {r['gf']} ({r['played']} gare)")
+
+    embed = discord.Embed(
+        title="📊 Power Ranking BC FC",
+        description="\n".join(lines),
+        color=discord.Color.purple()
+    )
+    embed.set_footer(text=f"Basato sugli ultimi {len(rows)} risultati confermati" + (f" • filtro: {competizione}" if competizione else ""))
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+# ================= FINE MIGLIORAMENTI BOT =================
 
 
 # ==========================================================
