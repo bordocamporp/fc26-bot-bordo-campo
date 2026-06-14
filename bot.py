@@ -353,6 +353,8 @@ AUCTION_SECONDS = 45
 ANTI_SNIPE_THRESHOLD = 10
 ANTI_SNIPE_EXTENSION = 20
 MARKET_TAX = 5
+MARKET_ANNOUNCE_CHANNEL_ID = "1514358646744678551"
+MARKET_CONTROL_ROLE_ID = "1498341567105339492"
 
 MAX_GK = 2
 MAX_DEF = 6
@@ -6102,8 +6104,12 @@ class MarketToggleButton(discord.ui.Button):
             )
 
     async def callback(self, interaction: discord.Interaction):
-        if not is_admin(interaction):
-            await interaction.response.send_message("❌ Solo lo staff può modificare lo stato del mercato.", ephemeral=True)
+        if not can_control_market(interaction.user):
+            await interaction.response.send_message(f"❌ Solo chi ha il ruolo autorizzato può modificare il mercato. Ruolo richiesto: `{MARKET_CONTROL_ROLE_ID}`", ephemeral=True)
+            return
+
+        if (not self.opened) and is_fut_classic_mode():
+            await interaction.response.send_message("❌ Il mercato non è disponibile in modalità **Torneo Classico FUT**.", ephemeral=True)
             return
 
         new_state = not self.opened
@@ -6134,6 +6140,7 @@ class MarketToggleButton(discord.ui.Button):
             )
 
         await interaction.response.edit_message(embed=embed, view=MarketStatusView())
+        await send_market_announcement(interaction.guild, new_state, staff_user=interaction.user)
         await send_staff_log(
             interaction.guild,
             "📈 Stato mercato modificato",
@@ -6143,14 +6150,143 @@ class MarketToggleButton(discord.ui.Button):
         )
 
 
+
+
+
+def can_control_market(member):
+    """Solo il ruolo autorizzato può aprire/chiudere il mercato."""
+    try:
+        return any(str(role.id) == str(MARKET_CONTROL_ROLE_ID) for role in getattr(member, "roles", []))
+    except Exception:
+        return False
+
+
+async def send_market_announcement(guild, opened: bool, staff_user=None):
+    """Pubblica l'apertura/chiusura mercato nel canale comunicazioni mercato."""
+    try:
+        channel = None
+        if guild:
+            channel = guild.get_channel(int(MARKET_ANNOUNCE_CHANNEL_ID))
+        if not channel:
+            channel = bot.get_channel(int(MARKET_ANNOUNCE_CHANNEL_ID))
+        if not channel:
+            channel = await bot.fetch_channel(int(MARKET_ANNOUNCE_CHANNEL_ID))
+
+        if not channel:
+            return False
+
+        if opened:
+            embed = discord.Embed(
+                title="📢 MERCATO APERTO",
+                description=(
+                    "Lo staff ha aperto ufficialmente il mercato.\n\n"
+                    "Operazioni consentite:\n"
+                    "• 🔨 Aste\n"
+                    "• 🤝 Scambi\n"
+                    "• 💰 Acquisti\n\n"
+                    "Buon mercato a tutti!"
+                ),
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                title="📢 MERCATO CHIUSO",
+                description=(
+                    "Il mercato è ora chiuso.\n\n"
+                    "Non è più possibile:\n"
+                    "• Aprire aste\n"
+                    "• Effettuare scambi\n"
+                    "• Acquistare giocatori\n\n"
+                    "Le rose restano congelate fino alla prossima apertura."
+                ),
+                color=discord.Color.red()
+            )
+
+        if staff_user:
+            embed.set_footer(text=f"Operazione eseguita da {staff_user}")
+        else:
+            embed.set_footer(text="FC26 • Comunicazioni mercato")
+
+        await channel.send(embed=embed)
+        return True
+    except Exception as e:
+        print(f"[MERCATO ANNUNCIO] Errore invio comunicazione mercato: {e}")
+        return False
+
+
+@tree.command(name="avvia_mercato", description="Staff: apre il mercato e abilita aste/scambi/acquisti")
+async def avvia_mercato(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+
+    if not can_control_market(interaction.user):
+        await interaction.followup.send(
+            f"❌ Solo chi ha il ruolo autorizzato può aprire il mercato.\nRuolo richiesto: `{MARKET_CONTROL_ROLE_ID}`",
+            ephemeral=True
+        )
+        return
+
+    if is_fut_classic_mode():
+        await interaction.followup.send(
+            "❌ Il mercato non è disponibile in modalità **Torneo Classico FUT**.",
+            ephemeral=True
+        )
+        return
+
+    await create_backup_before_sensitive_action("avvia_mercato")
+    set_market_open(True)
+    await send_market_announcement(interaction.guild, True, staff_user=interaction.user)
+
+    await send_staff_log(
+        interaction.guild,
+        "✅ Mercato aperto",
+        f"Mercato aperto da {interaction.user.mention}.\nComunicazione inviata in <#{MARKET_ANNOUNCE_CHANNEL_ID}>.",
+        user=interaction.user,
+        color=discord.Color.green()
+    )
+
+    await interaction.followup.send(
+        f"✅ Mercato aperto. Comunicazione inviata in <#{MARKET_ANNOUNCE_CHANNEL_ID}>.",
+        ephemeral=True
+    )
+
+
+@tree.command(name="chiudi_mercato", description="Staff: chiude il mercato e blocca aste/scambi/acquisti")
+async def chiudi_mercato(interaction: discord.Interaction):
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+
+    if not can_control_market(interaction.user):
+        await interaction.followup.send(
+            f"❌ Solo chi ha il ruolo autorizzato può chiudere il mercato.\nRuolo richiesto: `{MARKET_CONTROL_ROLE_ID}`",
+            ephemeral=True
+        )
+        return
+
+    await create_backup_before_sensitive_action("chiudi_mercato")
+    set_market_open(False)
+    await send_market_announcement(interaction.guild, False, staff_user=interaction.user)
+
+    await send_staff_log(
+        interaction.guild,
+        "🔒 Mercato chiuso",
+        f"Mercato chiuso da {interaction.user.mention}.\nComunicazione inviata in <#{MARKET_ANNOUNCE_CHANNEL_ID}>.",
+        user=interaction.user,
+        color=discord.Color.red()
+    )
+
+    await interaction.followup.send(
+        f"🔒 Mercato chiuso. Comunicazione inviata in <#{MARKET_ANNOUNCE_CHANNEL_ID}>.",
+        ephemeral=True
+    )
+
+
 @tree.command(name="mercato_stato", description="Staff: mostra lo stato mercato e permette di aprirlo/chiuderlo")
 async def mercato_stato(interaction: discord.Interaction):
     # Defer immediato: evita discord.errors.NotFound 10062 Unknown interaction
     # quando Supabase o Railway impiegano più di 3 secondi a rispondere.
     await safe_defer(interaction, ephemeral=True, thinking=True)
 
-    if not is_admin(interaction):
-        await safe_send(interaction, "❌ Solo lo staff può usare questo comando.", ephemeral=True)
+    if not can_control_market(interaction.user):
+        await safe_send(interaction, f"❌ Solo chi ha il ruolo autorizzato può usare questo comando. Ruolo richiesto: `{MARKET_CONTROL_ROLE_ID}`", ephemeral=True)
         return
 
     opened = is_market_open()
