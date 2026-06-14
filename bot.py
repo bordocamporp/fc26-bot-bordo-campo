@@ -31,7 +31,7 @@ SCAMBI_CHANNEL_ID = "1514358653254107136"
 REQUEST_ROLE_ID = "1398323695558332604"
 PRE_ISCRITTO_ROLE_ID = "1514358448865935572"
 
-RESULTS_CHANNEL_ID = "1514358659470069991"
+RESULTS_CHANNEL_ID = "1515766439796015316"
 STANDINGS_CHANNEL_ID = "1514358660598464586"
 STATS_CHANNEL_ID = "1514358662020468987"
 CALENDAR_CHANNEL_ID = "1514358657989611591"
@@ -41,9 +41,9 @@ LEAGUE_ADMIN_ROLE_ID = "1398342848436240434"
 
 # === FC26 ISCRIZIONI AUTOMATICHE ===
 SIGNUP_REQUEST_CHANNEL_ID = os.getenv("SIGNUP_REQUEST_CHANNEL_ID", "1504868857624399872")   # RICHIESTE ISCRIZIONI
-SIGNUP_STAFF_CHANNEL_ID = os.getenv("SIGNUP_STAFF_CHANNEL_ID", "1514633852226896002")     # LOG ISCRIZIONI / staff richieste
+SIGNUP_STAFF_CHANNEL_ID = os.getenv("SIGNUP_STAFF_CHANNEL_ID", "1506320879015952535")     # LOG ISCRIZIONI / staff richieste
 SIGNUP_REJECT_CHANNEL_ID = os.getenv("SIGNUP_REJECT_CHANNEL_ID", "1506320840168308911")    # CANALE ISCRIZIONI RIFIUTATE
-SIGNUP_ACCEPT_CHANNEL_ID = os.getenv("SIGNUP_ACCEPT_CHANNEL_ID", "1514358437230674046")    # CANALE ISCRIZIONI ACCETTATE
+SIGNUP_ACCEPT_CHANNEL_ID = os.getenv("SIGNUP_ACCEPT_CHANNEL_ID", "1506320769964183742")    # CANALE ISCRIZIONI ACCETTATE
 MEDIA_CHANNEL_ID = "1514358663249137855"
 SIGNUP_PENDING_ROLE_ID = PRE_ISCRITTO_ROLE_ID        # 1505180973208440954
 SIGNUP_REGISTERED_ROLE_ID = LEAGUE_PLAYER_ROLE_ID    # 1505181066695016619
@@ -332,7 +332,7 @@ BOT_ONLY_BYPASS_ROLE_IDS = {
 
 BOT_ONLY_CHANNELS = {
     1514358657989611591,  # calendario
-    1514358659470069991,  # risultati
+    1515766439796015316,  # risultati
     1514358660598464586,  # classifiche
     1514358662020468987,  # statistiche
     1514358651115278436,  # asta
@@ -13249,6 +13249,8 @@ def ensure_match_agreement_tables():
                 competition_name TEXT,
                 competition_type TEXT,
                 category TEXT,
+                round_label TEXT,
+                leg TEXT,
                 channel_id TEXT,
                 message_id TEXT,
                 thread_id TEXT,
@@ -13264,6 +13266,8 @@ def ensure_match_agreement_tables():
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS competition_name TEXT",
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS competition_type TEXT",
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS category TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS round_label TEXT",
+            "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS leg TEXT",
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS channel_id TEXT",
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS message_id TEXT",
             "ALTER TABLE match_agreement_threads ADD COLUMN IF NOT EXISTS thread_id TEXT",
@@ -13335,12 +13339,14 @@ def save_match_agreement_thread(match, channel_id, message_id, thread_id, status
     try:
         cur.execute("""
             INSERT INTO match_agreement_threads
-                (source_table, source_match_id, competition_name, competition_type, category, channel_id, message_id, thread_id, status, updated_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
+                (source_table, source_match_id, competition_name, competition_type, category, round_label, leg, channel_id, message_id, thread_id, status, updated_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_TIMESTAMP)
             ON CONFLICT (source_table, source_match_id) DO UPDATE SET
                 competition_name = EXCLUDED.competition_name,
                 competition_type = EXCLUDED.competition_type,
                 category = EXCLUDED.category,
+                round_label = EXCLUDED.round_label,
+                leg = EXCLUDED.leg,
                 channel_id = EXCLUDED.channel_id,
                 message_id = EXCLUDED.message_id,
                 thread_id = EXCLUDED.thread_id,
@@ -13352,6 +13358,8 @@ def save_match_agreement_thread(match, channel_id, message_id, thread_id, status
             str(match.get('competition_name') or ''),
             str(match.get('competition_type') or ''),
             agreement_category_from_match(match),
+            str(match.get('round') or _round_key_from_match(match) if '_round_key_from_match' in globals() else match.get('round') or ''),
+            str(match.get('leg') or ''),
             str(channel_id),
             str(message_id),
             str(thread_id),
@@ -14040,6 +14048,281 @@ class AgreementRoundSelectView(discord.ui.View):
         super().__init__(timeout=180)
         self.add_item(AgreementRoundSelect(category, competition_type, competition_name, rounds))
 
+
+
+
+def get_open_agreement_categories_available():
+    """Categorie con thread accordi aperti, usate da /chiudi_giornata."""
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT DISTINCT category
+            FROM match_agreement_threads
+            WHERE COALESCE(status, 'open') = 'open'
+              AND thread_id IS NOT NULL
+              AND thread_id <> ''
+            ORDER BY category ASC
+        """)
+        rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"[CHIUDI GIORNATA] Errore categorie: {e}")
+        rows = []
+    finally:
+        conn.close()
+    cats = [str(row_get(r, 'category', '') or '').strip() for r in rows if str(row_get(r, 'category', '') or '').strip()]
+    order = ['Campionati', 'Coppe Nazionali', 'Coppe Europee', 'Amichevoli']
+    cats.sort(key=lambda c: order.index(c) if c in order else 99)
+    return cats
+
+
+def get_open_agreement_competitions_by_category(category):
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT competition_type, competition_name, COUNT(*) AS count
+            FROM match_agreement_threads
+            WHERE COALESCE(status, 'open') = 'open'
+              AND thread_id IS NOT NULL
+              AND thread_id <> ''
+              AND LOWER(COALESCE(category, '')) = LOWER(%s)
+            GROUP BY competition_type, competition_name
+            ORDER BY competition_name ASC
+        """, (str(category),))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"[CHIUDI GIORNATA] Errore competizioni: {e}")
+        rows = []
+    finally:
+        conn.close()
+    return [{
+        'category': category,
+        'competition_type': str(row_get(r, 'competition_type', category) or category),
+        'competition_name': str(row_get(r, 'competition_name', 'Competizione') or 'Competizione'),
+        'count': safe_int(row_get(r, 'count', 0), 0),
+    } for r in rows]
+
+
+def get_open_agreement_rounds_for_competition(category, competition_type, competition_name):
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT COALESCE(NULLIF(round_label, ''), 'Turno') AS round_label, COUNT(*) AS count
+            FROM match_agreement_threads
+            WHERE COALESCE(status, 'open') = 'open'
+              AND thread_id IS NOT NULL
+              AND thread_id <> ''
+              AND LOWER(COALESCE(category, '')) = LOWER(%s)
+              AND LOWER(COALESCE(competition_type, '')) = LOWER(%s)
+              AND LOWER(COALESCE(competition_name, '')) = LOWER(%s)
+            GROUP BY COALESCE(NULLIF(round_label, ''), 'Turno')
+            ORDER BY COALESCE(NULLIF(round_label, ''), 'Turno') ASC
+        """, (str(category), str(competition_type or ''), str(competition_name or '')))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"[CHIUDI GIORNATA] Errore giornate/fasi: {e}")
+        rows = []
+    finally:
+        conn.close()
+
+    rounds = [(str(row_get(r, 'round_label', 'Turno') or 'Turno'), safe_int(row_get(r, 'count', 0), 0)) for r in rows]
+    def sort_key(item):
+        label = item[0]
+        nums = ''.join(ch if ch.isdigit() else ' ' for ch in label).split()
+        return safe_int(nums[-1], 9999) if nums else 9999
+    return sorted(rounds, key=sort_key)
+
+
+async def close_agreement_threads_for_selection(category, competition_type, competition_name, round_label, *, result_text=None):
+    """Archivia/chiude tutti i thread accordi aperti della selezione scelta."""
+    ensure_match_agreement_tables()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT *
+            FROM match_agreement_threads
+            WHERE COALESCE(status, 'open') = 'open'
+              AND thread_id IS NOT NULL
+              AND thread_id <> ''
+              AND LOWER(COALESCE(category, '')) = LOWER(%s)
+              AND LOWER(COALESCE(competition_type, '')) = LOWER(%s)
+              AND LOWER(COALESCE(competition_name, '')) = LOWER(%s)
+              AND LOWER(COALESCE(NULLIF(round_label, ''), 'Turno')) = LOWER(%s)
+            ORDER BY id ASC
+        """, (str(category), str(competition_type or ''), str(competition_name or ''), str(round_label or 'Turno')))
+        rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"[CHIUDI GIORNATA] Errore lettura thread: {e}")
+        rows = []
+    finally:
+        conn.close()
+
+    closed = 0
+    skipped = 0
+    for row in rows:
+        ok = await close_agreement_thread_for_match(
+            row_get(row, 'source_table'),
+            row_get(row, 'source_match_id'),
+            result_text=result_text or f"Thread chiuso dallo staff per {competition_name} • {round_label}."
+        )
+        if ok:
+            closed += 1
+        else:
+            skipped += 1
+        await asyncio.sleep(0.2)
+    return closed, skipped
+
+
+class CloseAgreementCategorySelect(discord.ui.Select):
+    def __init__(self, categories):
+        options = [discord.SelectOption(label=cat[:100], value=cat[:100], emoji=agreement_status_emoji(cat)) for cat in categories[:25]]
+        if not options:
+            options.append(discord.SelectOption(label='Nessun thread aperto', value='__none__'))
+        super().__init__(placeholder='Scegli categoria da chiudere...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        category = self.values[0]
+        if category == '__none__':
+            await interaction.response.send_message('❌ Nessun thread aperto da chiudere.', ephemeral=True)
+            return
+        comps = get_open_agreement_competitions_by_category(category)
+        embed = discord.Embed(
+            title=f'{agreement_status_emoji(category)} Chiudi giornata • {category}',
+            description='Scegli la competizione da chiudere/archiviare.',
+            color=discord.Color.orange()
+        )
+        await interaction.response.edit_message(embed=embed, view=CloseAgreementCompetitionSelectView(category, comps))
+
+
+class CloseAgreementCategorySelectView(discord.ui.View):
+    def __init__(self, categories):
+        super().__init__(timeout=180)
+        self.add_item(CloseAgreementCategorySelect(categories))
+
+
+class CloseAgreementCompetitionSelect(discord.ui.Select):
+    def __init__(self, category, competitions):
+        self.category = category
+        self.competitions = competitions[:25]
+        options = []
+        for idx, comp in enumerate(self.competitions):
+            options.append(discord.SelectOption(
+                label=str(comp['competition_name'])[:100],
+                value=str(idx),
+                description=f"{comp['competition_type']} • {comp['count']} thread aperti"[:100],
+                emoji=agreement_status_emoji(category)
+            ))
+        if not options:
+            options.append(discord.SelectOption(label='Nessuna competizione', value='__none__'))
+        super().__init__(placeholder='Scegli competizione...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        if self.values[0] == '__none__':
+            await interaction.response.send_message('❌ Nessuna competizione disponibile.', ephemeral=True)
+            return
+        comp = self.competitions[int(self.values[0])]
+        rounds = get_open_agreement_rounds_for_competition(self.category, comp['competition_type'], comp['competition_name'])
+        embed = discord.Embed(
+            title=f"{agreement_status_emoji(self.category)} Chiudi • {comp['competition_name']}",
+            description='Scegli la giornata/fase da archiviare.',
+            color=discord.Color.orange()
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=CloseAgreementRoundSelectView(self.category, comp['competition_type'], comp['competition_name'], rounds)
+        )
+
+
+class CloseAgreementCompetitionSelectView(discord.ui.View):
+    def __init__(self, category, competitions):
+        super().__init__(timeout=180)
+        self.add_item(CloseAgreementCompetitionSelect(category, competitions))
+
+
+class CloseAgreementRoundSelect(discord.ui.Select):
+    def __init__(self, category, competition_type, competition_name, rounds):
+        self.category = category
+        self.competition_type = competition_type
+        self.competition_name = competition_name
+        self.rounds = rounds[:25]
+        options = []
+        for idx, (round_label, count) in enumerate(self.rounds):
+            options.append(discord.SelectOption(
+                label=str(round_label)[:100],
+                value=str(idx),
+                description=f'{count} thread aperti da chiudere'[:100],
+                emoji='🔒'
+            ))
+        if not options:
+            options.append(discord.SelectOption(label='Nessuna giornata/fase', value='__none__'))
+        super().__init__(placeholder='Scegli giornata/fase da chiudere...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        if self.values[0] == '__none__':
+            await interaction.response.send_message('❌ Nessuna giornata/fase disponibile.', ephemeral=True)
+            return
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+        round_label = self.rounds[int(self.values[0])][0]
+        closed, skipped = await close_agreement_threads_for_selection(
+            self.category,
+            self.competition_type,
+            self.competition_name,
+            round_label
+        )
+        embed = discord.Embed(
+            title='🔒 Giornata/fase chiusa',
+            description=(
+                f"**Categoria:** {self.category}\n"
+                f"**Competizione:** {self.competition_name}\n"
+                f"**Giornata/Fase:** {round_label}\n\n"
+                f"Thread chiusi: **{closed}**\n"
+                f"Saltati/non trovati: **{skipped}**"
+            ),
+            color=discord.Color.green()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class CloseAgreementRoundSelectView(discord.ui.View):
+    def __init__(self, category, competition_type, competition_name, rounds):
+        super().__init__(timeout=180)
+        self.add_item(CloseAgreementRoundSelect(category, competition_type, competition_name, rounds))
+
+
+@tree.command(name='chiudi_giornata', description='Staff: archivia i thread accordi di una giornata/fase')
+async def chiudi_giornata(interaction: discord.Interaction):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+        return
+    categories = get_open_agreement_categories_available()
+    if not categories:
+        await interaction.response.send_message('❌ Nessun thread accordi aperto da chiudere.', ephemeral=True)
+        return
+    embed = discord.Embed(
+        title='🔒 Chiudi thread giornata/fase',
+        description=(
+            'Scegli categoria, competizione e giornata/fase.\n'
+            'Il bot archivierà e bloccherà solo i thread aperti di quella selezione.'
+        ),
+        color=discord.Color.orange()
+    )
+    embed.set_footer(text='BordoCampo FC26 • Accordi partita')
+    await interaction.response.send_message(embed=embed, view=CloseAgreementCategorySelectView(categories), ephemeral=True)
 
 @tree.command(name='genera_giornata', description='Staff: crea i thread accordi solo per una giornata/fase specifica')
 async def genera_giornata(interaction: discord.Interaction):
