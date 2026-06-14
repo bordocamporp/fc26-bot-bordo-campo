@@ -1308,11 +1308,39 @@ def set_league_mode(mode):
     cur.execute("""
         INSERT INTO league_settings (key, value) VALUES ('mode', %s) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
     """, (mode,))
+    # Chiave alias più chiara per la nuova gestione tornei.
+    try:
+        cur.execute("""
+            INSERT INTO league_settings (key, value)
+            VALUES ('tournament_mode', %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """, (mode,))
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
 
+def tournament_mode_label(mode=None):
+    mode = str(mode or get_league_mode() or 'fantacalcio')
+    return {
+        'squadre_reali': 'Manager Reale',
+        'fantacalcio': 'Fantacalcio con aste',
+        'torneo_classico_fut': 'Torneo Classico FUT',
+    }.get(mode, mode)
+
+
+def is_fut_classic_mode():
+    return str(get_league_mode()) == 'torneo_classico_fut'
+
+
+def market_disabled_for_current_mode():
+    return is_fut_classic_mode()
+
+
 def is_market_open():
+    if market_disabled_for_current_mode():
+        return False
     conn = connect()
     cur = conn.cursor()
     cur.execute("SELECT value FROM league_settings WHERE key = 'market_open'")
@@ -1332,6 +1360,8 @@ def set_market_open(opened: bool):
 
 
 def market_status_label():
+    if market_disabled_for_current_mode():
+        return "DISABILITATO 🎮 (Torneo Classico FUT)"
     return "APERTO ✅" if is_market_open() else "CHIUSO 🔒"
 
 
@@ -3511,8 +3541,10 @@ async def setup_iscrizioni(interaction: discord.Interaction):
                 "• **Età**\n"
                 "• **Piattaforma**\n"
                 "• **ID PSN/Xbox/EA**\n\n"
-                "Dopo l'invio, lo staff controllerà la richiesta e assegnerà un club libero.\n"
-                "Se la modalità attiva è **Squadre reali**, dovrai indicare almeno **2 club preferiti**."
+                "Dopo l'invio, lo staff controllerà la richiesta.\n"
+                "In **Manager Reale** lo staff assegna un club reale.\n"
+                "In **Fantacalcio** partirai senza rosa e costruirai la squadra con il mercato.\n"
+                "In **Torneo Classico FUT** dovrai indicare il nome della tua squadra FUT."
             ),
             color=discord.Color.blue()
         )
@@ -3719,7 +3751,9 @@ class SignupModal(discord.ui.Modal, title="Richiesta iscrizione FC26"):
                 "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_message_id TEXT",
                 "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_channel_id TEXT",
                 "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS signup_source TEXT",
-                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS source TEXT"
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS source TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS fut_team_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS tournament_mode TEXT"
             ]:
                 try:
                     cur.execute(sql)
@@ -3751,11 +3785,12 @@ class SignupModal(discord.ui.Modal, title="Richiesta iscrizione FC26"):
                 )
                 return
 
+            current_mode = get_league_mode()
             cur.execute("""
                 INSERT INTO signup_requests
                 (discord_id, discord_name, real_name, age, platform, game_id,
-                 ea_id, preferred_clubs, club_preferences, status, created_at, signup_source, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', CURRENT_TIMESTAMP, 'discord', 'discord')
+                 ea_id, preferred_clubs, club_preferences, status, created_at, signup_source, source, tournament_mode)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', CURRENT_TIMESTAMP, 'discord', 'discord', %s)
             """, (
                 str(interaction.user.id),
                 str(interaction.user),
@@ -3765,7 +3800,8 @@ class SignupModal(discord.ui.Modal, title="Richiesta iscrizione FC26"):
                 game_id,
                 game_id,
                 club_preferences,
-                club_preferences
+                club_preferences,
+                current_mode
             ))
 
             conn.commit()
@@ -3809,6 +3845,123 @@ class SignupModal(discord.ui.Modal, title="Richiesta iscrizione FC26"):
                 pass
 
 
+
+
+class FutClassicSignupModal(discord.ui.Modal, title="Richiesta iscrizione FUT"):
+    nome = discord.ui.TextInput(label="Nome", placeholder="Inserisci il tuo nome", required=True, max_length=50)
+    eta = discord.ui.TextInput(label="Età", placeholder="Esempio: 18", required=True, max_length=3)
+    piattaforma = discord.ui.TextInput(label="Piattaforma", placeholder="PS5 / Xbox / PC", required=True, max_length=30)
+    game_id = discord.ui.TextInput(label="ID PSN/Xbox/EA", placeholder="Inserisci il tuo ID", required=True, max_length=60)
+    fut_team_name = discord.ui.TextInput(
+        label="Nome squadra FUT",
+        placeholder="Esempio: BC United, Team Rossi, ecc.",
+        required=True,
+        max_length=80
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            await safe_defer(interaction, ephemeral=True, thinking=True)
+        except Exception as e:
+            print(f"[FUT SIGNUP MODAL] Defer fallito: {e}")
+            return
+
+        try:
+            real_name = str(self.nome.value).strip()
+            age = str(self.eta.value).strip()
+            platform = str(self.piattaforma.value).strip()
+            game_id = str(self.game_id.value).strip()
+            fut_team_name = str(self.fut_team_name.value).strip()
+
+            if not fut_team_name:
+                await interaction.followup.send("❌ Devi inserire il nome della tua squadra FUT.", ephemeral=True)
+                return
+
+            conn = connect()
+            cur = conn.cursor()
+            for sql in [
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS discord_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS real_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS age TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS platform TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS ea_id TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS game_id TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS preferred_clubs TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS club_preferences TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS fut_team_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS tournament_mode TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS club_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS handled_by TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS handled_at TIMESTAMP",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_message_id TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_channel_id TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS signup_source TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS source TEXT",
+            ]:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    pass
+
+            cur.execute("SELECT id FROM signup_requests WHERE discord_id = %s AND status = 'pending' LIMIT 1", (str(interaction.user.id),))
+            if cur.fetchone():
+                conn.close()
+                await interaction.followup.send("⚠️ Hai già una richiesta in attesa di valutazione.", ephemeral=True)
+                return
+
+            cur.execute("SELECT id FROM signup_requests WHERE discord_id = %s AND status = 'accepted' LIMIT 1", (str(interaction.user.id),))
+            if cur.fetchone():
+                conn.close()
+                await interaction.followup.send("❌ Sei già iscritto al torneo. Non puoi inviare una nuova richiesta.", ephemeral=True)
+                return
+
+            cur.execute("""
+                INSERT INTO signup_requests
+                (discord_id, discord_name, real_name, age, platform, game_id, ea_id,
+                 fut_team_name, club_name, status, created_at, signup_source, source, tournament_mode)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', CURRENT_TIMESTAMP, 'discord', 'discord', 'torneo_classico_fut')
+            """, (
+                str(interaction.user.id),
+                str(interaction.user),
+                real_name,
+                age,
+                platform,
+                game_id,
+                game_id,
+                fut_team_name,
+                fut_team_name,
+            ))
+            conn.commit()
+
+            cur.execute("SELECT id FROM signup_requests WHERE discord_id = %s ORDER BY id DESC LIMIT 1", (str(interaction.user.id),))
+            req = cur.fetchone()
+            request_id = req["id"] if req else "?"
+            conn.close()
+
+            try:
+                await apply_signup_role_pending(interaction.guild, interaction.user, reason="Richiesta iscrizione FUT")
+            except Exception as e:
+                print(f"[FUT SIGNUP MODAL] Errore ruolo PRE-ISCRITTO: {e}")
+
+            try:
+                await publish_signup_request_once(int(request_id), interaction.guild, source="discord")
+            except Exception as e:
+                print(f"[FUT SIGNUP MODAL] Errore invio staff unico: {e}")
+
+            await interaction.followup.send(
+                f"✅ Richiesta FUT inviata correttamente. Squadra FUT indicata: **{fut_team_name}**.",
+                ephemeral=True
+            )
+
+        except Exception as e:
+            print(f"[FUT SIGNUP MODAL] Errore submit: {e}")
+            try:
+                await interaction.followup.send(f"❌ Errore invio richiesta: `{e}`", ephemeral=True)
+            except Exception:
+                pass
+
 def get_signup_request(request_id):
     conn = connect()
     cur = conn.cursor()
@@ -3850,7 +4003,9 @@ async def publish_signup_request_once(request_id: int, guild=None, *, source="di
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_message_id TEXT",
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS staff_channel_id TEXT",
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS signup_source TEXT",
-            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS source TEXT"
+            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS source TEXT",
+            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS fut_team_name TEXT",
+            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS tournament_mode TEXT"
         ]:
             try:
                 cur.execute(sql)
@@ -3933,10 +4088,14 @@ async def publish_signup_request_once(request_id: int, guild=None, *, source="di
     embed.add_field(name="Età", value=age or "-", inline=True)
     embed.add_field(name="Piattaforma", value=platform or "-", inline=True)
     embed.add_field(name="ID PSN/Xbox/EA", value=game_id or "-", inline=False)
+    fut_team = str(_row_get(req, "fut_team_name", "") or "").strip()
+    req_mode = str(_row_get(req, "tournament_mode", get_league_mode()) or get_league_mode())
     if preferred and preferred != "-":
         embed.add_field(name="Club preferiti", value=preferred, inline=False)
+    if fut_team:
+        embed.add_field(name="Squadra FUT", value=fut_team, inline=False)
     try:
-        embed.add_field(name="Modalità attiva", value=get_league_mode(), inline=False)
+        embed.add_field(name="Modalità attiva", value=tournament_mode_label(req_mode), inline=False)
     except Exception:
         pass
     embed.set_footer(text="Lo staff deve scegliere ACCETTA o RIFIUTA.")
@@ -4615,6 +4774,8 @@ class SignupStaffView(discord.ui.View):
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS handled_by TEXT",
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS handled_at TIMESTAMP",
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS club_name TEXT",
+            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS fut_team_name TEXT",
+            "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS tournament_mode TEXT",
             "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'",
             "ALTER TABLE fc26_clubs ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP"
         ]:
@@ -4679,7 +4840,51 @@ class SignupStaffView(discord.ui.View):
             )
             return
 
-        # Modalità fantacalcio / altre: accetta senza squadra reale.
+        # Modalità Fantacalcio / Torneo Classico FUT: accetta senza assegnare club reale.
+        discord_id = str(req.get("discord_id"))
+        fut_team_name = str(req.get("fut_team_name") or req.get("club_name") or "").strip()
+        try:
+            conn = connect()
+            cur = conn.cursor()
+            for sql in [
+                "ALTER TABLE managers ADD COLUMN IF NOT EXISTS club_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS fut_team_name TEXT",
+                "ALTER TABLE signup_requests ADD COLUMN IF NOT EXISTS tournament_mode TEXT",
+            ]:
+                try:
+                    cur.execute(sql)
+                except Exception:
+                    pass
+            if mode == "torneo_classico_fut":
+                cur.execute("""
+                    INSERT INTO managers (discord_id, name, manager_name, club_name, budget)
+                    VALUES (%s, %s, %s, %s, 0)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        manager_name = EXCLUDED.manager_name,
+                        club_name = EXCLUDED.club_name,
+                        budget = EXCLUDED.budget
+                """, (discord_id, str(req.get("discord_name") or discord_id), str(req.get("discord_name") or discord_id), fut_team_name or str(req.get("discord_name") or discord_id)))
+                cur.execute("""
+                    UPDATE signup_requests
+                    SET club_name = COALESCE(NULLIF(%s, ''), club_name),
+                        tournament_mode = 'torneo_classico_fut'
+                    WHERE id = %s
+                """, (fut_team_name, self.request_id))
+            elif mode == "fantacalcio":
+                cur.execute("""
+                    INSERT INTO managers (discord_id, name, manager_name, budget)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (discord_id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        manager_name = EXCLUDED.manager_name,
+                        budget = EXCLUDED.budget
+                """, (discord_id, str(req.get("discord_name") or discord_id), str(req.get("discord_name") or discord_id), DEFAULT_BUDGET))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"[SIGNUP STAFF] Errore creazione manager modalità {mode}: {e}")
+
         await self._set_status("accepted", interaction)
 
         discord_id = str(req.get("discord_id"))
@@ -4708,6 +4913,9 @@ class SignupStaffView(discord.ui.View):
         embed.add_field(name="Nome", value=str(req.get("real_name") or "-"), inline=True)
         embed.add_field(name="Piattaforma", value=str(req.get("platform") or "-"), inline=True)
         embed.add_field(name="ID PSN/Xbox/EA", value=str(req.get("game_id") or req.get("ea_id") or "-"), inline=False)
+        if mode == "torneo_classico_fut":
+            embed.add_field(name="Squadra FUT", value=str(req.get("fut_team_name") or req.get("club_name") or "-"), inline=False)
+        embed.add_field(name="Modalità", value=tournament_mode_label(mode), inline=False)
 
         try:
             await interaction.message.edit(embed=embed, view=None)
@@ -4726,7 +4934,10 @@ class SignupStaffView(discord.ui.View):
         await safe_dm_signup_result(
             discord_id,
             "✅ Iscrizione accettata",
-            "La tua iscrizione a **FC26** è stata accettata dallo staff.",
+            (
+                "La tua iscrizione a **FC26** è stata accettata dallo staff."
+                + (f"\n\nSquadra FUT: **{str(req.get('fut_team_name') or req.get('club_name') or '-')}**" if mode == "torneo_classico_fut" else "")
+            ),
             discord.Color.green()
         )
 
@@ -4955,7 +5166,10 @@ class SignupStartView(discord.ui.View):
             # non fare defer() prima di send_modal()
             # altrimenti Discord dice:
             # "Interaction has already been acknowledged"
-            await interaction.response.send_modal(SignupModal())
+            if get_league_mode() == "torneo_classico_fut":
+                await interaction.response.send_modal(FutClassicSignupModal())
+            else:
+                await interaction.response.send_modal(SignupModal())
 
         except Exception as e:
             print(f"[SIGNUP BUTTON] Errore apertura modal: {e}")
@@ -9099,16 +9313,22 @@ class ModalitaSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(
-                label="Fantacalcio",
-                value="fantacalcio",
-                emoji="🏆",
-                description="Tutti partono da zero con lo stesso budget"
-            ),
-            discord.SelectOption(
-                label="Squadre reali",
+                label="Manager Reale",
                 value="squadre_reali",
                 emoji="🏟️",
-                description="Admin assegna squadre reali e budget compensativo"
+                description="Squadre reali, rosa reale, budget e mercato"
+            ),
+            discord.SelectOption(
+                label="Fantacalcio con aste",
+                value="fantacalcio",
+                emoji="🏆",
+                description="Squadre vuote, budget pieno, aste/scambi da zero"
+            ),
+            discord.SelectOption(
+                label="Torneo Classico FUT",
+                value="torneo_classico_fut",
+                emoji="🎮",
+                description="Squadre FUT personali, niente rose/mercato/aste"
             ),
         ]
 
@@ -9130,22 +9350,24 @@ class ModalitaSelect(discord.ui.Select):
 
         if mode == "fantacalcio":
             description = (
-                "🏆 Modalità impostata su **Fantacalcio**.\n\n"
-                "Tutti i manager costruiscono la rosa da zero tramite aste.\n"
+                "🏆 Modalità impostata su **Fantacalcio con aste**.\n\n"
+                "I player partono senza rosa e costruiscono la squadra da zero tramite aste/scambi.\n"
                 f"Budget standard consigliato: **{DEFAULT_BUDGET}** crediti.\n\n"
                 "Puoi usare `/reset_budget` per pareggiare tutti i budget."
             )
+        elif mode == "squadre_reali":
+            description = (
+                "🏟️ Modalità impostata su **Manager Reale**.\n\n"
+                "Lo staff assegna una squadra reale ai player.\n"
+                "Il bot assegna automaticamente i giocatori reali di quel club e calcola un budget compensativo.\n"
+                "Mercato, aste e scambi restano disponibili."
+            )
         else:
             description = (
-                "🏟️ Modalità impostata su **Squadre reali**.\n\n"
-                "Gli admin assegnano una squadra reale ai player con `/assegna_squadra`.\n"
-                "Il bot assegna automaticamente i giocatori di quel club e calcola un budget compensativo:\n"
-                "• OVR medio 85+ → 50 crediti\n"
-                "• OVR medio 82–84 → 80 crediti\n"
-                "• OVR medio 80–81 → 150 crediti\n"
-                "• OVR medio 78-79 → 350 crediti\n"
-                "• OVR medio 75-77 → 430 crediti\n"
-                "• sotto 75 → 500 crediti"
+                "🎮 Modalità impostata su **Torneo Classico FUT**.\n\n"
+                "I player useranno la propria squadra FUT personale.\n"
+                "Quando premono **Richiedi iscrizione**, il modulo chiederà il **nome della squadra FUT**.\n"
+                "In questa modalità mercato, aste, rose e assegnazione squadre reali non sono necessari."
             )
 
         embed = discord.Embed(
@@ -9170,7 +9392,7 @@ async def modalita(interaction: discord.Interaction):
         return
 
     current_mode = get_league_mode()
-    pretty = "Fantacalcio" if current_mode == "fantacalcio" else "Squadre reali"
+    pretty = tournament_mode_label(current_mode)
 
     embed = discord.Embed(
         title="⚙️ Modalità lega",
@@ -9181,10 +9403,29 @@ async def modalita(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, view=ModalitaView(), ephemeral=True)
 
 
+
+
+@tree.command(name="modalita_torneo", description="Admin: scegli la tipologia del torneo")
+async def modalita_torneo(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("❌ Solo gli admin possono usare questo comando.", ephemeral=True)
+        return
+
+    current_mode = get_league_mode()
+    pretty = tournament_mode_label(current_mode)
+
+    embed = discord.Embed(
+        title="⚙️ Tipologia torneo",
+        description=f"Modalità attuale: **{pretty}**\n\nScegli la tipologia del torneo dalla tendina.",
+        color=discord.Color.blue()
+    )
+
+    await interaction.response.send_message(embed=embed, view=ModalitaView(), ephemeral=True)
+
 @tree.command(name="modalita_attuale", description="Mostra la modalità attuale della lega")
 async def modalita_attuale(interaction: discord.Interaction):
     current_mode = get_league_mode()
-    pretty = "Fantacalcio" if current_mode == "fantacalcio" else "Squadre reali"
+    pretty = tournament_mode_label(current_mode)
 
     await interaction.response.send_message(f"⚙️ Modalità attuale: **{pretty}**.", ephemeral=True)
 
