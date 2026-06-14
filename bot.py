@@ -11857,7 +11857,7 @@ def save_unified_result_and_sync(source_table, match_id, home_goals, away_goals,
     cur = conn.cursor()
     try:
         # Recupera la partita dal sistema unificato.
-        all_matches = unified_pending_matches(discord_id=None, only_user=False)
+        all_matches = get_agreement_pending_matches_all()
         match = None
         for m in all_matches:
             if m["source_table"] == source_table and str(m["id"]) == str(match_id):
@@ -13589,6 +13589,515 @@ async def publish_updated_panels_after_result(source_table, source_match_id, *, 
         print(f"[PANNELLI POST RESULT] Errore: {type(e).__name__}: {e}")
         return False
 
+
+
+# ================= ACCORDI PER GIORNATA + AMICHEVOLI RANDOM =================
+
+def ensure_friendly_matches_table():
+    """Crea la tabella amichevoli usata durante il mercato."""
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS friendly_matches (
+                id SERIAL PRIMARY KEY,
+                round_number INTEGER DEFAULT 1,
+                competition_name TEXT DEFAULT 'Amichevoli',
+                competition_type TEXT DEFAULT 'Amichevoli',
+                home_id TEXT,
+                away_id TEXT,
+                home_name TEXT,
+                away_name TEXT,
+                home_goals INTEGER,
+                away_goals INTEGER,
+                status TEXT DEFAULT 'pending',
+                created_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        for sql in [
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS round_number INTEGER DEFAULT 1",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS competition_name TEXT DEFAULT 'Amichevoli'",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS competition_type TEXT DEFAULT 'Amichevoli'",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS home_id TEXT",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS away_id TEXT",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS home_name TEXT",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS away_name TEXT",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS home_goals INTEGER",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS away_goals INTEGER",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS created_by TEXT",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE friendly_matches ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        ]:
+            try:
+                cur.execute(sql)
+            except Exception:
+                pass
+        try:
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_friendly_matches_status_round ON friendly_matches(status, round_number)")
+        except Exception:
+            pass
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[AMICHEVOLI] Errore ensure_friendly_matches_table: {e}")
+    finally:
+        conn.close()
+
+
+def get_registered_clubs_for_friendlies():
+    """Ritorna i club iscritti/assegnati utilizzabili per generare amichevoli."""
+    conn = connect()
+    cur = conn.cursor()
+    rows = []
+    try:
+        cur.execute("""
+            SELECT DISTINCT ON (discord_id)
+                discord_id,
+                COALESCE(NULLIF(club_name, ''), NULLIF(name, ''), NULLIF(manager_name, ''), discord_id) AS club_name,
+                COALESCE(NULLIF(name, ''), NULLIF(manager_name, ''), discord_id) AS display_name
+            FROM managers
+            WHERE discord_id IS NOT NULL
+              AND discord_id <> ''
+            ORDER BY discord_id
+        """)
+        rows = cur.fetchall() or []
+    except Exception as e:
+        print(f"[AMICHEVOLI] Errore lettura managers: {e}")
+        rows = []
+
+    # Fallback/integrazione da fc26_clubs, utile quando il club è assegnato ma managers non è completo.
+    try:
+        cur.execute("""
+            SELECT assigned_to AS discord_id,
+                   name AS club_name,
+                   name AS display_name
+            FROM fc26_clubs
+            WHERE assigned_to IS NOT NULL
+              AND assigned_to <> ''
+        """)
+        existing = {str(row_get(r, 'discord_id', '')) for r in rows}
+        for r in cur.fetchall() or []:
+            did = str(row_get(r, 'discord_id', '') or '')
+            if did and did not in existing:
+                rows.append(r)
+                existing.add(did)
+    except Exception as e:
+        print(f"[AMICHEVOLI] Errore lettura fc26_clubs: {e}")
+    finally:
+        conn.close()
+
+    clean = []
+    seen = set()
+    for r in rows:
+        did = str(row_get(r, 'discord_id', '') or '').strip()
+        club = str(row_get(r, 'club_name', '') or '').strip()
+        if not did or not club or did in seen:
+            continue
+        clean.append({
+            'discord_id': did,
+            'club_name': club,
+            'display_name': str(row_get(r, 'display_name', club) or club)
+        })
+        seen.add(did)
+    return clean
+
+
+def get_next_friendly_round():
+    ensure_friendly_matches_table()
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COALESCE(MAX(round_number), 0) + 1 AS next_round FROM friendly_matches")
+        row = cur.fetchone()
+        return safe_int(row_get(row, 'next_round', 1), 1)
+    except Exception:
+        return 1
+    finally:
+        conn.close()
+
+
+def create_random_friendlies(numero_partite=0, giornata=None, created_by=None):
+    """Genera accoppiamenti random e salva amichevoli pending."""
+    ensure_friendly_matches_table()
+    clubs = get_registered_clubs_for_friendlies()
+    random.shuffle(clubs)
+
+    max_pairs = len(clubs) // 2
+    if max_pairs <= 0:
+        return 0, 0, []
+
+    requested = safe_int(numero_partite, 0)
+    if requested <= 0 or requested > max_pairs:
+        requested = max_pairs
+
+    round_number = safe_int(giornata, 0) or get_next_friendly_round()
+    pairs = []
+    for i in range(requested):
+        home = clubs[i * 2]
+        away = clubs[i * 2 + 1]
+        pairs.append((home, away))
+
+    conn = connect()
+    cur = conn.cursor()
+    created = 0
+    try:
+        for home, away in pairs:
+            cur.execute("""
+                INSERT INTO friendly_matches
+                    (round_number, competition_name, competition_type, home_id, away_id, home_name, away_name, status, created_by, created_at, updated_at)
+                VALUES
+                    (%s, 'Amichevoli', 'Amichevoli', %s, %s, %s, %s, 'pending', %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (
+                int(round_number),
+                str(home['discord_id']),
+                str(away['discord_id']),
+                str(home['club_name']),
+                str(away['club_name']),
+                str(created_by or '')
+            ))
+            created += 1
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        print(f"[AMICHEVOLI] Errore creazione amichevoli: {e}")
+        raise
+    finally:
+        conn.close()
+
+    preview = [f"{h['club_name']} vs {a['club_name']}" for h, a in pairs]
+    return created, round_number, preview
+
+
+def get_friendly_pending_matches():
+    ensure_friendly_matches_table()
+    conn = connect()
+    cur = conn.cursor()
+    out = []
+    try:
+        cur.execute("""
+            SELECT *
+            FROM friendly_matches
+            WHERE COALESCE(status, 'pending') <> 'played'
+              AND home_goals IS NULL
+              AND away_goals IS NULL
+            ORDER BY round_number ASC, id ASC
+        """)
+        for r in cur.fetchall() or []:
+            out.append({
+                'source_table': 'friendly_matches',
+                'id': str(row_get(r, 'id')),
+                'competition_name': row_get(r, 'competition_name', 'Amichevoli') or 'Amichevoli',
+                'competition_type': row_get(r, 'competition_type', 'Amichevoli') or 'Amichevoli',
+                'round': f"Giornata {row_get(r, 'round_number', 1)}",
+                'round_number': safe_int(row_get(r, 'round_number', 1), 1),
+                'leg': 'unica',
+                'home_user_id': str(row_get(r, 'home_id', '') or ''),
+                'away_user_id': str(row_get(r, 'away_id', '') or ''),
+                'home_club': str(row_get(r, 'home_name', '') or 'Casa'),
+                'away_club': str(row_get(r, 'away_name', '') or 'Trasferta'),
+            })
+    except Exception as e:
+        print(f"[AMICHEVOLI] Errore lettura amichevoli pending: {e}")
+    finally:
+        conn.close()
+    return out
+
+
+def get_agreement_pending_matches_all():
+    """Tutte le partite disponibili per generare thread accordi, incluse amichevoli."""
+    matches = []
+    try:
+        matches.extend(unified_pending_matches(discord_id=None, only_user=False) or [])
+    except Exception as e:
+        print(f"[GENERA GIORNATA] Errore unified_pending_matches: {e}")
+    try:
+        matches.extend(get_friendly_pending_matches())
+    except Exception as e:
+        print(f"[GENERA GIORNATA] Errore get_friendly_pending_matches: {e}")
+    return matches
+
+
+def _round_key_from_match(match):
+    source = str(match.get('source_table') or '')
+    if source == 'friendly_matches':
+        return f"Giornata {safe_int(match.get('round_number'), 1)}"
+    round_label = str(match.get('round') or 'Turno').strip()
+    return round_label or 'Turno'
+
+
+def _competition_key_from_match(match):
+    return f"{agreement_category_from_match(match)}|||{match.get('competition_type') or ''}|||{match.get('competition_name') or 'Competizione'}"
+
+
+def get_agreement_categories_available():
+    categories = []
+    seen = set()
+    for m in get_agreement_pending_matches_all():
+        cat = agreement_category_from_match(m)
+        if cat not in seen:
+            seen.add(cat)
+            categories.append(cat)
+    order = ['Campionati', 'Coppe Nazionali', 'Coppe Europee', 'Amichevoli']
+    categories.sort(key=lambda c: order.index(c) if c in order else 99)
+    return categories
+
+
+def get_agreement_competitions_by_category(category):
+    comps = {}
+    for m in get_agreement_pending_matches_all():
+        cat = agreement_category_from_match(m)
+        if normalize_text(cat) != normalize_text(category):
+            continue
+        key = _competition_key_from_match(m)
+        comps.setdefault(key, {
+            'category': cat,
+            'competition_type': str(m.get('competition_type') or cat),
+            'competition_name': str(m.get('competition_name') or 'Competizione'),
+            'count': 0,
+        })
+        comps[key]['count'] += 1
+    return list(comps.values())
+
+
+def get_agreement_rounds_for_competition(category, competition_type, competition_name):
+    rounds = {}
+    for m in get_agreement_pending_matches_all():
+        if normalize_text(agreement_category_from_match(m)) != normalize_text(category):
+            continue
+        if normalize_text(m.get('competition_type') or '') != normalize_text(competition_type or ''):
+            continue
+        if normalize_text(m.get('competition_name') or '') != normalize_text(competition_name or ''):
+            continue
+        rkey = _round_key_from_match(m)
+        rounds.setdefault(rkey, 0)
+        rounds[rkey] += 1
+    def sort_key(item):
+        label = item[0]
+        nums = ''.join(ch if ch.isdigit() else ' ' for ch in label).split()
+        return safe_int(nums[-1], 9999) if nums else 9999
+    return sorted(rounds.items(), key=sort_key)
+
+
+def get_matches_for_agreement_selection(category, competition_type, competition_name, round_key):
+    selected = []
+    for m in get_agreement_pending_matches_all():
+        if normalize_text(agreement_category_from_match(m)) != normalize_text(category):
+            continue
+        if normalize_text(m.get('competition_type') or '') != normalize_text(competition_type or ''):
+            continue
+        if normalize_text(m.get('competition_name') or '') != normalize_text(competition_name or ''):
+            continue
+        if normalize_text(_round_key_from_match(m)) != normalize_text(round_key):
+            continue
+        selected.append(m)
+    return selected
+
+
+async def create_agreement_threads_for_matches(guild, matches, *, only_missing=True):
+    created = 0
+    skipped = 0
+    for m in matches:
+        if only_missing and get_match_agreement_row(m.get('source_table'), m.get('id')):
+            skipped += 1
+            continue
+        ok = await create_agreement_thread_for_match(guild, m, force=not only_missing)
+        if ok:
+            created += 1
+        else:
+            skipped += 1
+        await asyncio.sleep(0.2)
+    return created, skipped
+
+
+class AgreementCategorySelect(discord.ui.Select):
+    def __init__(self, categories):
+        options = []
+        for cat in categories[:25]:
+            options.append(discord.SelectOption(
+                label=cat[:100],
+                value=cat[:100],
+                description='Scegli questa categoria di competizione',
+                emoji=agreement_status_emoji(cat)
+            ))
+        if not options:
+            options.append(discord.SelectOption(label='Nessuna partita pending', value='__none__'))
+        super().__init__(placeholder='Scegli categoria...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        category = self.values[0]
+        if category == '__none__':
+            await interaction.response.send_message('❌ Nessuna partita disponibile.', ephemeral=True)
+            return
+        comps = get_agreement_competitions_by_category(category)
+        embed = discord.Embed(
+            title=f'{agreement_status_emoji(category)} Genera giornata • {category}',
+            description='Scegli la competizione.',
+            color=discord.Color.blurple()
+        )
+        await interaction.response.edit_message(embed=embed, view=AgreementCompetitionSelectView(category, comps))
+
+
+class AgreementCategorySelectView(discord.ui.View):
+    def __init__(self, categories):
+        super().__init__(timeout=180)
+        self.add_item(AgreementCategorySelect(categories))
+
+
+class AgreementCompetitionSelect(discord.ui.Select):
+    def __init__(self, category, competitions):
+        self.category = category
+        self.competitions = competitions[:25]
+        options = []
+        for idx, comp in enumerate(self.competitions):
+            options.append(discord.SelectOption(
+                label=str(comp['competition_name'])[:100],
+                value=str(idx),
+                description=f"{comp['competition_type']} • {comp['count']} partite"[:100],
+                emoji=agreement_status_emoji(category)
+            ))
+        if not options:
+            options.append(discord.SelectOption(label='Nessuna competizione', value='__none__'))
+        super().__init__(placeholder='Scegli competizione...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        if self.values[0] == '__none__':
+            await interaction.response.send_message('❌ Nessuna competizione disponibile.', ephemeral=True)
+            return
+        comp = self.competitions[int(self.values[0])]
+        rounds = get_agreement_rounds_for_competition(self.category, comp['competition_type'], comp['competition_name'])
+        embed = discord.Embed(
+            title=f"{agreement_status_emoji(self.category)} {comp['competition_name']}",
+            description='Scegli la giornata o fase da pubblicare nel canale accordi.',
+            color=discord.Color.blurple()
+        )
+        await interaction.response.edit_message(
+            embed=embed,
+            view=AgreementRoundSelectView(self.category, comp['competition_type'], comp['competition_name'], rounds)
+        )
+
+
+class AgreementCompetitionSelectView(discord.ui.View):
+    def __init__(self, category, competitions):
+        super().__init__(timeout=180)
+        self.add_item(AgreementCompetitionSelect(category, competitions))
+
+
+class AgreementRoundSelect(discord.ui.Select):
+    def __init__(self, category, competition_type, competition_name, rounds):
+        self.category = category
+        self.competition_type = competition_type
+        self.competition_name = competition_name
+        self.rounds = rounds[:25]
+        options = []
+        for idx, (round_label, count) in enumerate(self.rounds):
+            options.append(discord.SelectOption(
+                label=str(round_label)[:100],
+                value=str(idx),
+                description=f'{count} partite da pubblicare'[:100],
+                emoji='📅'
+            ))
+        if not options:
+            options.append(discord.SelectOption(label='Nessuna giornata/fase', value='__none__'))
+        super().__init__(placeholder='Scegli giornata/fase...', min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not can_use_normal_staff(interaction.user):
+            await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+            return
+        if self.values[0] == '__none__':
+            await interaction.response.send_message('❌ Nessuna giornata/fase disponibile.', ephemeral=True)
+            return
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+        round_label = self.rounds[int(self.values[0])][0]
+        matches = get_matches_for_agreement_selection(self.category, self.competition_type, self.competition_name, round_label)
+        created, skipped = await create_agreement_threads_for_matches(interaction.guild, matches, only_missing=True)
+        embed = discord.Embed(
+            title='✅ Giornata pubblicata negli accordi',
+            description=(
+                f"**Categoria:** {self.category}\n"
+                f"**Competizione:** {self.competition_name}\n"
+                f"**Giornata/Fase:** {round_label}\n\n"
+                f"Thread creati: **{created}**\n"
+                f"Già presenti/saltati: **{skipped}**\n"
+                f"Canale: <#{AGREEMENTS_CHANNEL_ID}>"
+            ),
+            color=discord.Color.green()
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+class AgreementRoundSelectView(discord.ui.View):
+    def __init__(self, category, competition_type, competition_name, rounds):
+        super().__init__(timeout=180)
+        self.add_item(AgreementRoundSelect(category, competition_type, competition_name, rounds))
+
+
+@tree.command(name='genera_giornata', description='Staff: crea i thread accordi solo per una giornata/fase specifica')
+async def genera_giornata(interaction: discord.Interaction):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+        return
+    categories = get_agreement_categories_available()
+    if not categories:
+        await interaction.response.send_message('❌ Nessuna partita pending trovata per creare thread accordi.', ephemeral=True)
+        return
+    embed = discord.Embed(
+        title='📅 Genera thread per giornata/fase',
+        description=(
+            'Scegli prima la categoria, poi la competizione e infine la giornata/fase.\n'
+            'Il bot creerà i thread solo per quella selezione nel canale accordi.'
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_footer(text='BordoCampo FC26 • Accordi partita')
+    await interaction.response.send_message(embed=embed, view=AgreementCategorySelectView(categories), ephemeral=True)
+
+
+@tree.command(name='genera_amichevole', description='Staff: genera partite amichevoli random durante il mercato')
+@app_commands.describe(
+    numero_partite='Numero di amichevoli da creare. Lascia 0 per usare tutti i player disponibili.',
+    giornata='Numero giornata amichevoli. Lascia 0 per creare la prossima giornata automaticamente.'
+)
+async def genera_amichevole(interaction: discord.Interaction, numero_partite: int = 0, giornata: int = 0):
+    if not can_use_normal_staff(interaction.user):
+        await interaction.response.send_message('❌ Solo lo staff può usare questo comando.', ephemeral=True)
+        return
+    await safe_defer(interaction, ephemeral=True, thinking=True)
+    try:
+        created, round_number, preview = create_random_friendlies(
+            numero_partite=numero_partite,
+            giornata=giornata,
+            created_by=str(interaction.user.id)
+        )
+        if created <= 0:
+            await interaction.followup.send('❌ Non ci sono abbastanza manager iscritti per creare amichevoli.', ephemeral=True)
+            return
+        lines = '\n'.join(f'• {x}' for x in preview[:20])
+        if len(preview) > 20:
+            lines += f"\n... e altre {len(preview) - 20} partite"
+        embed = discord.Embed(
+            title='🤝 Amichevoli generate',
+            description=(
+                f'Giornata amichevoli: **{round_number}**\n'
+                f'Partite create: **{created}**\n\n'
+                f'{lines}\n\n'
+                'Ora usa `/genera_giornata` → **Amichevoli** → scegli la giornata per creare i thread accordi.'
+            ),
+            color=discord.Color.green()
+        )
+        embed.set_footer(text='BordoCampo FC26 • Amichevoli mercato')
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f'❌ Errore generazione amichevoli: `{type(e).__name__}: {e}`', ephemeral=True)
 
 @tree.command(name="genera_accordi_partite", description="Staff: crea i thread accordi per tutte le partite da giocare")
 @app_commands.describe(categoria="Opzionale: Campionati, Coppe Nazionali, Coppe Europee o Amichevoli")
