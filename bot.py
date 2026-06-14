@@ -5349,6 +5349,14 @@ async def on_ready():
     except Exception as e:
         print(f"[SCADENZE PARTITE] Avvio loop fallito: {e}")
 
+    try:
+        if not getattr(bot, "_pending_results_auto_confirm_task_started", False):
+            bot.loop.create_task(pending_results_auto_confirm_loop())
+            bot._pending_results_auto_confirm_task_started = True
+            print("[REFERTI AUTO] Loop reminder 12h e auto-conferma 24h avviato.")
+    except Exception as e:
+        print(f"[REFERTI AUTO] Avvio loop fallito: {e}")
+
     print(f"Bot online come {bot.user}")
 
 
@@ -12368,6 +12376,9 @@ def ensure_pending_results_table():
             status TEXT DEFAULT 'pending',
             contest_reason TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reminder_12h_sent BOOLEAN DEFAULT FALSE,
+            reminder_12h_sent_at TIMESTAMP,
+            auto_confirmed_at TIMESTAMP,
             confirmed_at TIMESTAMP,
             contested_at TIMESTAMP
         )
@@ -12391,6 +12402,9 @@ def ensure_pending_results_table():
             "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending'",
             "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS contest_reason TEXT",
             "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS reminder_12h_sent BOOLEAN DEFAULT FALSE",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS reminder_12h_sent_at TIMESTAMP",
+            "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS auto_confirmed_at TIMESTAMP",
             "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMP",
             "ALTER TABLE pending_results ADD COLUMN IF NOT EXISTS contested_at TIMESTAMP",
         ]:
@@ -12540,7 +12554,7 @@ async def delete_agreement_thread_for_match(source_table, source_match_id):
     return ok
 
 
-async def finalize_pending_result(pending_id, guild=None):
+async def finalize_pending_result(pending_id, guild=None, *, auto_confirm=False):
     row = get_pending_result(pending_id)
     if not row:
         raise RuntimeError("Referto pending non trovato.")
@@ -12564,11 +12578,19 @@ async def finalize_pending_result(pending_id, guild=None):
     conn = connect()
     cur = conn.cursor()
     try:
-        cur.execute("""
-            UPDATE pending_results
-            SET status = 'confirmed', confirmed_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-        """, (int(pending_id),))
+        final_status = 'auto_confirmed' if auto_confirm else 'confirmed'
+        if auto_confirm:
+            cur.execute("""
+                UPDATE pending_results
+                SET status = %s, confirmed_at = CURRENT_TIMESTAMP, auto_confirmed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (final_status, int(pending_id)))
+        else:
+            cur.execute("""
+                UPDATE pending_results
+                SET status = %s, confirmed_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (final_status, int(pending_id)))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -12597,6 +12619,139 @@ async def notify_opponent_for_pending_result(guild, pending_id):
     except Exception as e:
         print(f"[PENDING RESULT DM] Errore DM avversario {confirm_by}: {type(e).__name__}: {e}")
         return False
+
+
+async def send_pending_result_12h_reminder(row):
+    """Invia il promemoria dopo 12 ore al player che deve confermare."""
+    confirm_by = str(row_get(row, "confirm_by", "") or "").strip()
+    if not confirm_by:
+        return False
+
+    embed = build_pending_result_embed(row)
+    embed.title = "⏰ Promemoria referto da confermare"
+    embed.description = (
+        embed.description
+        + "\n\n⏳ Sono passate **12 ore** dall'invio del referto. "
+        + "Se non premi **ACCETTA** o **CONTESTA** entro 24 ore totali, "
+        + "il risultato verrà accettato automaticamente."
+    )
+    embed.color = discord.Color.gold()
+
+    try:
+        user = await bot.fetch_user(int(confirm_by))
+        await user.send(embed=embed, view=PendingResultConfirmView(row_get(row, "id"), confirm_by))
+        return True
+    except Exception as e:
+        print(f"[PENDING RESULT 12H] Errore DM reminder a {confirm_by}: {type(e).__name__}: {e}")
+        return False
+
+
+async def notify_auto_confirmed_result(row, match=None):
+    """Avvisa i due player e lo staff che il referto è stato auto-confermato."""
+    home_id = str(row_get(row, "home_user_id", "") or "").strip()
+    away_id = str(row_get(row, "away_user_id", "") or "").strip()
+    home = row_get(row, "home_club", "Casa")
+    away = row_get(row, "away_club", "Trasferta")
+    hg = safe_int(row_get(row, "home_goals", 0))
+    ag = safe_int(row_get(row, "away_goals", 0))
+
+    embed = build_pending_result_embed(row)
+    embed.title = "✅ Referto auto-confermato dopo 24h"
+    embed.description = (
+        f"## {home} {hg} - {ag} {away}\n\n"
+        "Il risultato è stato accettato automaticamente perché il player avversario "
+        "non ha risposto entro **24 ore**."
+    )
+    embed.color = discord.Color.green()
+
+    for uid in {home_id, away_id}:
+        if not uid:
+            continue
+        try:
+            user = await bot.fetch_user(int(uid))
+            await user.send(embed=embed)
+        except Exception:
+            pass
+
+    try:
+        channel = bot.get_channel(int(MATCH_DEADLINE_STAFF_CHANNEL_ID)) or await bot.fetch_channel(int(MATCH_DEADLINE_STAFF_CHANNEL_ID))
+        await channel.send(content="✅ **Referto auto-confermato dopo 24h**", embed=embed)
+    except Exception as e:
+        print(f"[PENDING RESULT AUTO STAFF] Errore avviso staff: {type(e).__name__}: {e}")
+
+
+async def pending_results_auto_confirm_loop():
+    """Ogni 5 minuti controlla i referti pending: reminder 12h e auto-conferma 24h."""
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        try:
+            ensure_pending_results_table()
+            conn = connect()
+            cur = conn.cursor()
+            try:
+                # Reminder 12h: solo una volta.
+                cur.execute("""
+                    SELECT *
+                    FROM pending_results
+                    WHERE status = 'pending'
+                      AND created_at <= CURRENT_TIMESTAMP - INTERVAL '12 hours'
+                      AND COALESCE(reminder_12h_sent, FALSE) = FALSE
+                    ORDER BY created_at ASC
+                    LIMIT 25
+                """)
+                reminder_rows = cur.fetchall() or []
+            except Exception as e:
+                print(f"[PENDING RESULT LOOP] Errore query reminder: {e}")
+                reminder_rows = []
+
+            for row in reminder_rows:
+                ok = await send_pending_result_12h_reminder(row)
+                try:
+                    cur.execute("""
+                        UPDATE pending_results
+                        SET reminder_12h_sent = TRUE,
+                            reminder_12h_sent_at = CURRENT_TIMESTAMP
+                        WHERE id = %s
+                    """, (int(row_get(row, "id")),))
+                    conn.commit()
+                except Exception as e:
+                    conn.rollback()
+                    print(f"[PENDING RESULT LOOP] Errore update reminder: {e}")
+                await asyncio.sleep(0.2)
+
+            try:
+                # Auto-conferma 24h.
+                cur.execute("""
+                    SELECT *
+                    FROM pending_results
+                    WHERE status = 'pending'
+                      AND created_at <= CURRENT_TIMESTAMP - INTERVAL '24 hours'
+                    ORDER BY created_at ASC
+                    LIMIT 25
+                """)
+                expired_rows = cur.fetchall() or []
+            except Exception as e:
+                print(f"[PENDING RESULT LOOP] Errore query auto-confirm: {e}")
+                expired_rows = []
+
+            conn.close()
+
+            guild = bot.get_guild(int(GUILD_ID)) if GUILD_ID else None
+            for row in expired_rows:
+                pending_id = int(row_get(row, "id"))
+                try:
+                    match = await finalize_pending_result(pending_id, guild, auto_confirm=True)
+                    updated = get_pending_result(pending_id) or row
+                    await notify_auto_confirmed_result(updated, match)
+                    print(f"[PENDING RESULT AUTO] Referto #{pending_id} auto-confermato dopo 24h.")
+                except Exception as e:
+                    print(f"[PENDING RESULT AUTO] Errore auto-conferma referto #{pending_id}: {type(e).__name__}: {e}")
+                await asyncio.sleep(0.5)
+
+        except Exception as e:
+            print(f"[PENDING RESULT LOOP] Errore generale: {type(e).__name__}: {e}")
+
+        await asyncio.sleep(300)
 
 
 class ContestResultModal(discord.ui.Modal, title="Contesta referto"):
