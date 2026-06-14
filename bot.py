@@ -1995,7 +1995,7 @@ class AuctionView(discord.ui.View):
 
 OWNER_STAFF_ROLE_ID = "1398342848436240434"      # FOUNDER: comandi sensibili
 LIMITED_STAFF_ROLE_ID = "1398358193197027408"    # STAFF: no comandi sensibili
-STAFF_LOG_CHANNEL_ID = 1506321007873495070
+STAFF_LOG_CHANNEL_ID = 1514358694245306559
 
 DANGEROUS_ACTIONS = {
     "reset",
@@ -2283,7 +2283,7 @@ async def ask_danger_confirmation(interaction, action_name, description, callbac
 BACKUP_DIR = Path("backups")
 BACKUP_DIR.mkdir(exist_ok=True)
 MAX_BACKUPS_TO_KEEP = 5
-BACKUP_NOTIFICATION_CHANNEL_ID = 1506321007873495070
+BACKUP_NOTIFICATION_CHANNEL_ID = 1514358694245306559
 
 # Se il tuo db.py usa un nome diverso, modifica qui.
 DATABASE_CANDIDATES = [
