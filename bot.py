@@ -3533,18 +3533,40 @@ async def setup_iscrizioni(interaction: discord.Interaction):
             )
             return
 
+        current_mode = get_league_mode()
+        current_mode_label = tournament_mode_label(current_mode)
+
+        if current_mode == "torneo_classico_fut":
+            mode_note = (
+                "🎮 **Modalità attiva: Torneo Classico FUT**\n"
+                "Nel modulo dovrai scrivere il **nome della tua squadra FUT**.\n"
+                "Quel nome verrà usato come club ufficiale per calendario, risultati e classifiche."
+            )
+        elif current_mode == "squadre_reali":
+            mode_note = (
+                "🏟️ **Modalità attiva: Manager Reale**\n"
+                "Nel modulo puoi indicare i **club reali preferiti**.\n"
+                "Lo staff assegnerà poi una squadra reale libera."
+            )
+        else:
+            mode_note = (
+                "💰 **Modalità attiva: Fantacalcio con aste**\n"
+                "Non devi scegliere una squadra reale: partirai senza rosa e costruirai la squadra tramite mercato/aste."
+            )
+
         embed = discord.Embed(
             title="📋 Richiesta iscrizione torneo FC 26",
             description=(
+                f"{mode_note}\n\n"
                 "Premi il pulsante qui sotto e compila:\n\n"
                 "• **Nome**\n"
                 "• **Età**\n"
                 "• **Piattaforma**\n"
-                "• **ID PSN/Xbox/EA**\n\n"
-                "Dopo l'invio, lo staff controllerà la richiesta.\n"
-                "In **Manager Reale** lo staff assegna un club reale.\n"
-                "In **Fantacalcio** partirai senza rosa e costruirai la squadra con il mercato.\n"
-                "In **Torneo Classico FUT** dovrai indicare il nome della tua squadra FUT."
+                "• **ID PSN/Xbox/EA**\n"
+                "• **Nome squadra FUT** solo se la modalità è Torneo Classico FUT\n"
+                "• **Club preferiti** solo se la modalità è Manager Reale\n\n"
+                f"Modalità attuale: **{current_mode_label}**\n"
+                "Dopo l'invio, lo staff controllerà la richiesta."
             ),
             color=discord.Color.blue()
         )
@@ -3703,8 +3725,8 @@ class SignupModal(discord.ui.Modal, title="Richiesta iscrizione FC26"):
     piattaforma = discord.ui.TextInput(label="Piattaforma", placeholder="PS5 / Xbox / PC", required=True, max_length=30)
     game_id = discord.ui.TextInput(label="ID PSN/Xbox/EA", placeholder="Inserisci il tuo ID", required=True, max_length=60)
     club_preferiti = discord.ui.TextInput(
-        label="Club che vorresti",
-        placeholder="Solo modalità reale: scrivine almeno 2, es. Milan, Real Madrid",
+        label="Club preferiti / Squadra FUT",
+        placeholder="Manager Reale: Milan, Real Madrid. FUT: scrivi il nome della tua squadra FUT",
         required=False,
         max_length=200
     )
@@ -3854,7 +3876,7 @@ class FutClassicSignupModal(discord.ui.Modal, title="Richiesta iscrizione FUT"):
     game_id = discord.ui.TextInput(label="ID PSN/Xbox/EA", placeholder="Inserisci il tuo ID", required=True, max_length=60)
     fut_team_name = discord.ui.TextInput(
         label="Nome squadra FUT",
-        placeholder="Esempio: BC United, Team Rossi, ecc.",
+        placeholder="Scrivi il nome esatto del tuo club FUT, es. BC United",
         required=True,
         max_length=80
     )
