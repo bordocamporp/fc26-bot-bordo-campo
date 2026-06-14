@@ -1365,6 +1365,242 @@ def market_status_label():
     return "APERTO ✅" if is_market_open() else "CHIUSO 🔒"
 
 
+
+# ================= CONFIGURAZIONE TORNEO FUT =================
+FUT_TOURNAMENT_DEFAULTS = {
+    "fut_format": "groups_knockout",          # groups_only / groups_knockout / knockout_only
+    "fut_group_legs": "andata_ritorno",       # andata / andata_ritorno
+    "fut_knockout_legs": "andata_ritorno",    # unica / andata_ritorno
+    "fut_final_leg": "unica",                 # unica / andata_ritorno
+}
+
+
+def get_setting_value(key, default=None):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT value FROM league_settings WHERE key = %s", (str(key),))
+        row = cur.fetchone()
+        return (row["value"] if row and row.get("value") is not None else default)
+    except Exception:
+        return default
+    finally:
+        conn.close()
+
+
+def set_setting_value(key, value):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            INSERT INTO league_settings (key, value)
+            VALUES (%s, %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        """, (str(key), str(value)))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def get_fut_tournament_config():
+    return {key: get_setting_value(key, default) for key, default in FUT_TOURNAMENT_DEFAULTS.items()}
+
+
+def set_fut_tournament_config(config: dict):
+    conn = connect()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS league_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
+        for key, default in FUT_TOURNAMENT_DEFAULTS.items():
+            value = str(config.get(key, default))
+            cur.execute("""
+                INSERT INTO league_settings (key, value)
+                VALUES (%s, %s)
+                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """, (key, value))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def fut_groups_double_round_enabled():
+    return get_fut_tournament_config().get("fut_group_legs") == "andata_ritorno"
+
+
+def fut_knockout_two_legs_enabled():
+    return get_fut_tournament_config().get("fut_knockout_legs") == "andata_ritorno"
+
+
+def fut_final_single_match_enabled():
+    return get_fut_tournament_config().get("fut_final_leg") == "unica"
+
+
+def fut_config_embed():
+    cfg = get_fut_tournament_config()
+    labels = {
+        "groups_only": "Solo gironi",
+        "groups_knockout": "Gironi + fase eliminatoria",
+        "knockout_only": "Solo eliminazione diretta",
+        "andata": "Solo andata",
+        "andata_ritorno": "Andata e ritorno",
+        "unica": "Partita unica",
+    }
+    embed = discord.Embed(
+        title="🎮 Configurazione Torneo Classico FUT",
+        description=(
+            f"**Formato:** {labels.get(cfg['fut_format'], cfg['fut_format'])}\n"
+            f"**Gironi:** {labels.get(cfg['fut_group_legs'], cfg['fut_group_legs'])}\n"
+            f"**Fase eliminatoria:** {labels.get(cfg['fut_knockout_legs'], cfg['fut_knockout_legs'])}\n"
+            f"**Finale:** {labels.get(cfg['fut_final_leg'], cfg['fut_final_leg'])}\n\n"
+            "Queste impostazioni vengono usate quando la modalità lega è **Torneo Classico FUT**."
+        ),
+        color=discord.Color.purple()
+    )
+    return embed
+
+
+class FutFormatSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Formato torneo FUT...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Solo gironi", value="groups_only", emoji="🏆"),
+                discord.SelectOption(label="Gironi + fase eliminatoria", value="groups_knockout", emoji="🎯"),
+                discord.SelectOption(label="Solo eliminazione diretta", value="knockout_only", emoji="⚔️"),
+            ]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.config["fut_format"] = self.values[0]
+        await interaction.response.edit_message(embed=self.parent_view.preview_embed(), view=self.parent_view)
+
+
+class FutGroupLegSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Formato gironi...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Solo andata", value="andata", emoji="➡️"),
+                discord.SelectOption(label="Andata e ritorno", value="andata_ritorno", emoji="🔁"),
+            ]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.config["fut_group_legs"] = self.values[0]
+        await interaction.response.edit_message(embed=self.parent_view.preview_embed(), view=self.parent_view)
+
+
+class FutKnockoutLegSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Formato fase eliminatoria...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Partita unica", value="unica", emoji="1️⃣"),
+                discord.SelectOption(label="Andata e ritorno", value="andata_ritorno", emoji="🔁"),
+            ]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.config["fut_knockout_legs"] = self.values[0]
+        await interaction.response.edit_message(embed=self.parent_view.preview_embed(), view=self.parent_view)
+
+
+class FutFinalLegSelect(discord.ui.Select):
+    def __init__(self, parent):
+        self.parent_view = parent
+        super().__init__(
+            placeholder="Formato finale...",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Finale partita unica", value="unica", emoji="🏁"),
+                discord.SelectOption(label="Finale andata e ritorno", value="andata_ritorno", emoji="🔁"),
+            ]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        self.parent_view.config["fut_final_leg"] = self.values[0]
+        await interaction.response.edit_message(embed=self.parent_view.preview_embed(), view=self.parent_view)
+
+
+class FutTournamentConfigView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.config = get_fut_tournament_config()
+        self.add_item(FutFormatSelect(self))
+        self.add_item(FutGroupLegSelect(self))
+        self.add_item(FutKnockoutLegSelect(self))
+        self.add_item(FutFinalLegSelect(self))
+
+    def preview_embed(self):
+        labels = {
+            "groups_only": "Solo gironi",
+            "groups_knockout": "Gironi + fase eliminatoria",
+            "knockout_only": "Solo eliminazione diretta",
+            "andata": "Solo andata",
+            "andata_ritorno": "Andata e ritorno",
+            "unica": "Partita unica",
+        }
+        embed = discord.Embed(
+            title="🎮 Configura Torneo Classico FUT",
+            description=(
+                f"**Formato:** {labels.get(self.config['fut_format'], self.config['fut_format'])}\n"
+                f"**Gironi:** {labels.get(self.config['fut_group_legs'], self.config['fut_group_legs'])}\n"
+                f"**Fase eliminatoria:** {labels.get(self.config['fut_knockout_legs'], self.config['fut_knockout_legs'])}\n"
+                f"**Finale:** {labels.get(self.config['fut_final_leg'], self.config['fut_final_leg'])}\n\n"
+                "Quando hai finito premi **Salva configurazione**."
+            ),
+            color=discord.Color.purple()
+        )
+        return embed
+
+    @discord.ui.button(label="Salva configurazione", style=discord.ButtonStyle.success, emoji="✅")
+    async def save(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_league_admin(interaction):
+            await interaction.response.send_message("❌ Solo lo staff può configurare il torneo FUT.", ephemeral=True)
+            return
+        try:
+            set_fut_tournament_config(self.config)
+            await interaction.response.edit_message(embed=fut_config_embed(), view=None)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Errore salvataggio configurazione FUT: `{e}`", ephemeral=True)
+
+
+@tree.command(name="configura_torneo_fut", description="Staff: configura formato FUT, gironi, eliminatorie e finale")
+async def configura_torneo_fut(interaction: discord.Interaction):
+    if not is_league_admin(interaction):
+        await interaction.response.send_message("❌ Solo lo staff può usare questo comando.", ephemeral=True)
+        return
+    view = FutTournamentConfigView()
+    await interaction.response.send_message(embed=view.preview_embed(), view=view, ephemeral=True)
+
+
+@tree.command(name="torneo_fut_attuale", description="Mostra la configurazione attuale del Torneo Classico FUT")
+async def torneo_fut_attuale(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=fut_config_embed(), ephemeral=True)
+
+# ================= FINE CONFIGURAZIONE TORNEO FUT =================
+
 def budget_from_team_overall(avg_ovr):
     avg_ovr = float(avg_ovr or 0)
 
@@ -11104,38 +11340,6 @@ class GuidedCompetitionView(discord.ui.View):
         self.add_item(GuidedCompetitionSelect(options))
 
 
-def build_fut_result_start_embed(match):
-    embed = discord.Embed(
-        title="🎮 Inserimento risultato FUT",
-        description=(
-            f"**{match['home_club']} vs {match['away_club']}**\n\n"
-            "In modalità **Torneo Classico FUT** non devi selezionare marcatori, "
-            "perché le squadre sono quelle personali dei player e non sono create nel database.\n\n"
-            "Premi il pulsante sotto e inserisci solo il risultato finale."
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.add_field(name="Competizione", value=f"{match['competition_type']} • {match['competition_name']}", inline=False)
-    embed.add_field(name="Giornata/Fase", value=f"{match['round']} {match['leg']}", inline=False)
-    return embed
-
-
-class FutClassicResultStartView(discord.ui.View):
-    def __init__(self, match):
-        super().__init__(timeout=300)
-        self.match = match
-
-    @discord.ui.button(label="Inserisci risultato FUT", style=discord.ButtonStyle.success, emoji="🎮")
-    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_home_match_for_user(self.match, interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Solo il manager della squadra di casa può inserire il risultato.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.send_modal(FutClassicResultModal(self.match))
-
-
 class GuidedMatchSelect(discord.ui.Select):
     def __init__(self, competition_key, matches):
         self.competition_key = competition_key
@@ -11583,10 +11787,14 @@ def generator_insert_championship(name, teams, *, competition_type="campionato",
                 INSERT INTO championship_players (championship_id, group_id, discord_id, display_name, club_name)
                 VALUES (%s, %s, %s, %s, %s)
             """, (championship_id, group_id, t["discord_id"], t["display_name"], t["club_name"]))
-        rounds = generator_round_robin(group_teams, double_round=True)
-        first_leg_last = len(rounds) // 2
+        # In modalità FUT lo staff decide se i gironi sono solo andata o andata/ritorno.
+        double_round = True
+        if is_fut_classic_mode():
+            double_round = fut_groups_double_round_enabled()
+        rounds = generator_round_robin(group_teams, double_round=double_round)
+        first_leg_last = (len(rounds) // 2) if double_round else len(rounds)
         for round_idx, pairs in enumerate(rounds, start=1):
-            leg = "andata" if round_idx <= first_leg_last else "ritorno"
+            leg = "andata" if (not double_round or round_idx <= first_leg_last) else "ritorno"
             for home, away in pairs:
                 cur.execute("""
                     INSERT INTO championship_matches
@@ -11637,6 +11845,7 @@ def generator_create_national_cup(championship_id):
     cup_id = cur.fetchone()["id"]
     random.shuffle(teams)
     matches = 0
+    two_legs = is_fut_classic_mode() and fut_knockout_two_legs_enabled()
     for i in range(0, len(teams) - 1, 2):
         home, away = teams[i], teams[i + 1]
         cur.execute("""
@@ -11644,6 +11853,12 @@ def generator_create_national_cup(championship_id):
             VALUES (%s, 1, %s, %s, %s, %s, 'pending', 'andata')
         """, (cup_id, home["discord_id"], away["discord_id"], home["club_name"], away["club_name"]))
         matches += 1
+        if two_legs:
+            cur.execute("""
+                INSERT INTO national_cup_matches (cup_id, round_number, home_id, away_id, home_name, away_name, status, leg)
+                VALUES (%s, 1, %s, %s, %s, %s, 'pending', 'ritorno')
+            """, (cup_id, away["discord_id"], home["discord_id"], away["club_name"], home["club_name"]))
+            matches += 1
     generator_insert_initial_standings(cur, cup_name, "Coppa Nazionale", teams)
     conn.commit()
     conn.close()
@@ -11772,8 +11987,9 @@ class GenerateCompetitionButton(discord.ui.Button):
                 await interaction.followup.send("❌ Seleziona almeno 2 partecipanti.", ephemeral=True)
                 return
             champ_id, groups = generator_insert_championship(view.payload, selected, competition_type="campionato", group_count=1)
-            total_matches = sum(len(pairs) for _gid, _gname, group_teams in groups for pairs in generator_round_robin(group_teams, True))
-            await interaction.followup.send(f"✅ Campionato **{view.payload}** generato.\nPartecipanti: **{len(selected)}**\nPartite create: **{total_matches}**\nOra puoi usare `/genera_coppa_nazionale` e poi `/avvia_andata`.", ephemeral=True)
+            rr_double = fut_groups_double_round_enabled() if is_fut_classic_mode() else True
+            total_matches = sum(len(pairs) for _gid, _gname, group_teams in groups for pairs in generator_round_robin(group_teams, rr_double))
+            await interaction.followup.send(f"✅ Campionato **{view.payload}** generato.\nPartecipanti: **{len(selected)}**\nPartite create: **{total_matches}**\nFormato gironi: **{'andata/ritorno' if rr_double else 'solo andata'}**.\nOra puoi usare `/genera_coppa_nazionale` e poi `/avvia_andata`.", ephemeral=True)
             return
         name, total_raw, groups_raw, advance_raw = view.payload.split("||")
         total, group_count, advance = safe_int(total_raw), safe_int(groups_raw), safe_int(advance_raw)
@@ -11781,7 +11997,7 @@ class GenerateCompetitionButton(discord.ui.Button):
             await interaction.followup.send(f"❌ Devi selezionare esattamente {total} partecipanti. Ora sono {len(selected)}.", ephemeral=True)
             return
         champ_id, groups = generator_insert_championship(name, selected, competition_type="europea", group_count=group_count, teams_per_group=max(1, total // max(1, group_count)), european_pass=advance)
-        await interaction.followup.send(f"✅ Coppa europea **{name}** generata.\nPartecipanti: **{len(selected)}** • Gironi: **{group_count}** • Passano: **{advance}**.\nFase gironi creata con andata/ritorno. Il tabellone knockout sarà gestito dopo la fase a gironi.", ephemeral=True)
+        await interaction.followup.send(f"✅ Coppa europea **{name}** generata.\nPartecipanti: **{len(selected)}** • Gironi: **{group_count}** • Passano: **{advance}**.\nFase gironi creata in base alla configurazione FUT se attiva. Il tabellone knockout sarà gestito dopo la fase a gironi.", ephemeral=True)
 
 
 class ChampionshipCupSelect(discord.ui.Select):
@@ -11797,7 +12013,7 @@ class ChampionshipCupSelect(discord.ui.Select):
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             cup_id, cup_name, teams, matches = generator_create_national_cup(int(self.values[0]))
-            await interaction.followup.send(f"✅ **{cup_name}** generata.\nPartecipanti: **{teams}**\nPartite primo turno: **{matches}**\nFormato: **partita secca / solo andata**.", ephemeral=True)
+            await interaction.followup.send(f"✅ **{cup_name}** generata.\nPartecipanti: **{teams}**\nPartite primo turno: **{matches}**\nFormato applicato in base alla configurazione FUT se attiva.", ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"❌ Errore generazione coppa: `{type(e).__name__}: {e}`", ephemeral=True)
 
@@ -12799,19 +13015,8 @@ def build_pending_result_embed(row):
     embed.add_field(name="Competizione", value=f"{ctype} • {comp}", inline=False)
     if round_label:
         embed.add_field(name="Giornata/Fase", value=str(round_label), inline=False)
-
-    # In modalità Torneo Classico FUT le squadre sono quelle personali dei player
-    # e non esistono rose/marcatori nel database: si conferma solo il risultato.
-    if is_fut_classic_mode():
-        embed.add_field(
-            name="Modalità referto",
-            value="🎮 Torneo Classico FUT: risultato senza marcatori.",
-            inline=False,
-        )
-    else:
-        embed.add_field(name=f"Marcatori {home}", value=_scorer_lines_from_json(row_get(row, "home_scorers", "[]")), inline=False)
-        embed.add_field(name=f"Marcatori {away}", value=_scorer_lines_from_json(row_get(row, "away_scorers", "[]")), inline=False)
-
+    embed.add_field(name=f"Marcatori {home}", value=_scorer_lines_from_json(row_get(row, "home_scorers", "[]")), inline=False)
+    embed.add_field(name=f"Marcatori {away}", value=_scorer_lines_from_json(row_get(row, "away_scorers", "[]")), inline=False)
     embed.add_field(name="Inserito da", value=f"<@{row_get(row, 'submitted_by', '')}>", inline=True)
     embed.add_field(name="Da confermare", value=f"<@{row_get(row, 'confirm_by', '')}>", inline=True)
     embed.set_footer(text=f"BordoCampo FC26 • Referto #{row_get(row, 'id', '')}")
@@ -13158,83 +13363,6 @@ class PendingResultConfirmView(discord.ui.View):
 
 # ================= FINE REFERTI: CONFERMA AVVERSARIO =================
 
-class FutClassicResultModal(discord.ui.Modal, title="Risultato FUT"):
-    home_goals = discord.ui.TextInput(
-        label="Gol squadra casa",
-        placeholder="Esempio: 2",
-        required=True,
-        max_length=2,
-    )
-    away_goals = discord.ui.TextInput(
-        label="Gol squadra trasferta",
-        placeholder="Esempio: 1",
-        required=True,
-        max_length=2,
-    )
-
-    def __init__(self, match):
-        super().__init__()
-        self.match = match
-
-    async def on_submit(self, interaction: discord.Interaction):
-        # In modalità FUT solo la squadra di casa può inserire il risultato.
-        if not is_home_match_for_user(self.match, interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Solo il manager della squadra di casa può inserire e inviare il risultato.",
-                ephemeral=True,
-            )
-            return
-
-        raw_home = str(self.home_goals.value).strip()
-        raw_away = str(self.away_goals.value).strip()
-
-        if not raw_home.isdigit() or not raw_away.isdigit():
-            await interaction.response.send_message(
-                "❌ Inserisci solo numeri interi nei gol.",
-                ephemeral=True,
-            )
-            return
-
-        home_goals = safe_int(raw_home)
-        away_goals = safe_int(raw_away)
-
-        if home_goals < 0 or away_goals < 0:
-            await interaction.response.send_message(
-                "❌ I gol non possono essere negativi.",
-                ephemeral=True,
-            )
-            return
-
-        await safe_defer(interaction, ephemeral=True, thinking=True)
-
-        try:
-            pending_id = create_pending_result(
-                self.match,
-                submitted_by=str(interaction.user.id),
-                home_goals=home_goals,
-                away_goals=away_goals,
-                home_scorers=[],
-                away_scorers=[],
-            )
-            dm_ok = await notify_opponent_for_pending_result(interaction.guild, pending_id)
-
-            await interaction.followup.send(
-                (
-                    "✅ Risultato FUT inviato all'avversario per la conferma.\n"
-                    f"**{self.match['home_club']} {home_goals} - {away_goals} {self.match['away_club']}**\n"
-                    + ("📩 DM inviato correttamente." if dm_ok else "⚠️ Non sono riuscito a inviare il DM: avvisa lo staff o l'avversario.")
-                ),
-                ephemeral=True,
-            )
-
-        except Exception as e:
-            print(f"[FUT RESULT SEND ERROR] {type(e).__name__}: {e}")
-            await interaction.followup.send(
-                f"❌ Errore invio risultato FUT: `{type(e).__name__}: {e}`",
-                ephemeral=True,
-            )
-
-
 class GuidedScorerFlowView(discord.ui.View):
     def __init__(self, match):
         super().__init__(timeout=600)
@@ -13385,38 +13513,6 @@ class GuidedScorerFlowView(discord.ui.View):
             )
 
 
-def build_fut_result_start_embed(match):
-    embed = discord.Embed(
-        title="🎮 Inserimento risultato FUT",
-        description=(
-            f"**{match['home_club']} vs {match['away_club']}**\n\n"
-            "In modalità **Torneo Classico FUT** non devi selezionare marcatori, "
-            "perché le squadre sono quelle personali dei player e non sono create nel database.\n\n"
-            "Premi il pulsante sotto e inserisci solo il risultato finale."
-        ),
-        color=discord.Color.blue(),
-    )
-    embed.add_field(name="Competizione", value=f"{match['competition_type']} • {match['competition_name']}", inline=False)
-    embed.add_field(name="Giornata/Fase", value=f"{match['round']} {match['leg']}", inline=False)
-    return embed
-
-
-class FutClassicResultStartView(discord.ui.View):
-    def __init__(self, match):
-        super().__init__(timeout=300)
-        self.match = match
-
-    @discord.ui.button(label="Inserisci risultato FUT", style=discord.ButtonStyle.success, emoji="🎮")
-    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_home_match_for_user(self.match, interaction.user.id):
-            await interaction.response.send_message(
-                "❌ Solo il manager della squadra di casa può inserire il risultato.",
-                ephemeral=True,
-            )
-            return
-        await interaction.response.send_modal(FutClassicResultModal(self.match))
-
-
 class GuidedMatchSelect(discord.ui.Select):
     def __init__(self, matches):
         self.match_map = {}
@@ -13453,24 +13549,6 @@ class GuidedMatchSelect(discord.ui.Select):
             return
 
         match = self.match_map[self.values[0]]
-
-        if is_fut_classic_mode():
-            await interaction.followup.send(
-                "🎮 Modalità FUT attiva: inserisci solo il risultato finale, senza marcatori.",
-                ephemeral=True,
-            )
-            try:
-                # Dopo un defer non si può aprire un modal sulla stessa interazione.
-                # Usiamo un bottone dedicato per aprire correttamente il modal.
-                await interaction.followup.send(
-                    embed=build_fut_result_start_embed(match),
-                    view=FutClassicResultStartView(match),
-                    ephemeral=True,
-                )
-            except Exception as e:
-                print(f"[FUT RESULT START ERROR] {type(e).__name__}: {e}")
-            return
-
         flow = GuidedScorerFlowView(match)
 
         await safe_send(
@@ -13538,7 +13616,7 @@ class GuidedCompetitionView(discord.ui.View):
         options = args[-1]
         self.add_item(GuidedCompetitionSelect(options))
 
-@tree.command(name="risultato", description="Inserisci un risultato: con marcatori o solo risultato in FUT")
+@tree.command(name="risultato", description="Inserisci un risultato guidato: competizione, partita, gol e marcatori")
 async def risultato(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True, thinking=True)
 
