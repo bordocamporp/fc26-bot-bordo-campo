@@ -11104,6 +11104,38 @@ class GuidedCompetitionView(discord.ui.View):
         self.add_item(GuidedCompetitionSelect(options))
 
 
+def build_fut_result_start_embed(match):
+    embed = discord.Embed(
+        title="🎮 Inserimento risultato FUT",
+        description=(
+            f"**{match['home_club']} vs {match['away_club']}**\n\n"
+            "In modalità **Torneo Classico FUT** non devi selezionare marcatori, "
+            "perché le squadre sono quelle personali dei player e non sono create nel database.\n\n"
+            "Premi il pulsante sotto e inserisci solo il risultato finale."
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Competizione", value=f"{match['competition_type']} • {match['competition_name']}", inline=False)
+    embed.add_field(name="Giornata/Fase", value=f"{match['round']} {match['leg']}", inline=False)
+    return embed
+
+
+class FutClassicResultStartView(discord.ui.View):
+    def __init__(self, match):
+        super().__init__(timeout=300)
+        self.match = match
+
+    @discord.ui.button(label="Inserisci risultato FUT", style=discord.ButtonStyle.success, emoji="🎮")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_home_match_for_user(self.match, interaction.user.id):
+            await interaction.response.send_message(
+                "❌ Solo il manager della squadra di casa può inserire il risultato.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(FutClassicResultModal(self.match))
+
+
 class GuidedMatchSelect(discord.ui.Select):
     def __init__(self, competition_key, matches):
         self.competition_key = competition_key
@@ -12767,8 +12799,19 @@ def build_pending_result_embed(row):
     embed.add_field(name="Competizione", value=f"{ctype} • {comp}", inline=False)
     if round_label:
         embed.add_field(name="Giornata/Fase", value=str(round_label), inline=False)
-    embed.add_field(name=f"Marcatori {home}", value=_scorer_lines_from_json(row_get(row, "home_scorers", "[]")), inline=False)
-    embed.add_field(name=f"Marcatori {away}", value=_scorer_lines_from_json(row_get(row, "away_scorers", "[]")), inline=False)
+
+    # In modalità Torneo Classico FUT le squadre sono quelle personali dei player
+    # e non esistono rose/marcatori nel database: si conferma solo il risultato.
+    if is_fut_classic_mode():
+        embed.add_field(
+            name="Modalità referto",
+            value="🎮 Torneo Classico FUT: risultato senza marcatori.",
+            inline=False,
+        )
+    else:
+        embed.add_field(name=f"Marcatori {home}", value=_scorer_lines_from_json(row_get(row, "home_scorers", "[]")), inline=False)
+        embed.add_field(name=f"Marcatori {away}", value=_scorer_lines_from_json(row_get(row, "away_scorers", "[]")), inline=False)
+
     embed.add_field(name="Inserito da", value=f"<@{row_get(row, 'submitted_by', '')}>", inline=True)
     embed.add_field(name="Da confermare", value=f"<@{row_get(row, 'confirm_by', '')}>", inline=True)
     embed.set_footer(text=f"BordoCampo FC26 • Referto #{row_get(row, 'id', '')}")
@@ -13115,6 +13158,83 @@ class PendingResultConfirmView(discord.ui.View):
 
 # ================= FINE REFERTI: CONFERMA AVVERSARIO =================
 
+class FutClassicResultModal(discord.ui.Modal, title="Risultato FUT"):
+    home_goals = discord.ui.TextInput(
+        label="Gol squadra casa",
+        placeholder="Esempio: 2",
+        required=True,
+        max_length=2,
+    )
+    away_goals = discord.ui.TextInput(
+        label="Gol squadra trasferta",
+        placeholder="Esempio: 1",
+        required=True,
+        max_length=2,
+    )
+
+    def __init__(self, match):
+        super().__init__()
+        self.match = match
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # In modalità FUT solo la squadra di casa può inserire il risultato.
+        if not is_home_match_for_user(self.match, interaction.user.id):
+            await interaction.response.send_message(
+                "❌ Solo il manager della squadra di casa può inserire e inviare il risultato.",
+                ephemeral=True,
+            )
+            return
+
+        raw_home = str(self.home_goals.value).strip()
+        raw_away = str(self.away_goals.value).strip()
+
+        if not raw_home.isdigit() or not raw_away.isdigit():
+            await interaction.response.send_message(
+                "❌ Inserisci solo numeri interi nei gol.",
+                ephemeral=True,
+            )
+            return
+
+        home_goals = safe_int(raw_home)
+        away_goals = safe_int(raw_away)
+
+        if home_goals < 0 or away_goals < 0:
+            await interaction.response.send_message(
+                "❌ I gol non possono essere negativi.",
+                ephemeral=True,
+            )
+            return
+
+        await safe_defer(interaction, ephemeral=True, thinking=True)
+
+        try:
+            pending_id = create_pending_result(
+                self.match,
+                submitted_by=str(interaction.user.id),
+                home_goals=home_goals,
+                away_goals=away_goals,
+                home_scorers=[],
+                away_scorers=[],
+            )
+            dm_ok = await notify_opponent_for_pending_result(interaction.guild, pending_id)
+
+            await interaction.followup.send(
+                (
+                    "✅ Risultato FUT inviato all'avversario per la conferma.\n"
+                    f"**{self.match['home_club']} {home_goals} - {away_goals} {self.match['away_club']}**\n"
+                    + ("📩 DM inviato correttamente." if dm_ok else "⚠️ Non sono riuscito a inviare il DM: avvisa lo staff o l'avversario.")
+                ),
+                ephemeral=True,
+            )
+
+        except Exception as e:
+            print(f"[FUT RESULT SEND ERROR] {type(e).__name__}: {e}")
+            await interaction.followup.send(
+                f"❌ Errore invio risultato FUT: `{type(e).__name__}: {e}`",
+                ephemeral=True,
+            )
+
+
 class GuidedScorerFlowView(discord.ui.View):
     def __init__(self, match):
         super().__init__(timeout=600)
@@ -13265,6 +13385,38 @@ class GuidedScorerFlowView(discord.ui.View):
             )
 
 
+def build_fut_result_start_embed(match):
+    embed = discord.Embed(
+        title="🎮 Inserimento risultato FUT",
+        description=(
+            f"**{match['home_club']} vs {match['away_club']}**\n\n"
+            "In modalità **Torneo Classico FUT** non devi selezionare marcatori, "
+            "perché le squadre sono quelle personali dei player e non sono create nel database.\n\n"
+            "Premi il pulsante sotto e inserisci solo il risultato finale."
+        ),
+        color=discord.Color.blue(),
+    )
+    embed.add_field(name="Competizione", value=f"{match['competition_type']} • {match['competition_name']}", inline=False)
+    embed.add_field(name="Giornata/Fase", value=f"{match['round']} {match['leg']}", inline=False)
+    return embed
+
+
+class FutClassicResultStartView(discord.ui.View):
+    def __init__(self, match):
+        super().__init__(timeout=300)
+        self.match = match
+
+    @discord.ui.button(label="Inserisci risultato FUT", style=discord.ButtonStyle.success, emoji="🎮")
+    async def open_modal(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_home_match_for_user(self.match, interaction.user.id):
+            await interaction.response.send_message(
+                "❌ Solo il manager della squadra di casa può inserire il risultato.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_modal(FutClassicResultModal(self.match))
+
+
 class GuidedMatchSelect(discord.ui.Select):
     def __init__(self, matches):
         self.match_map = {}
@@ -13301,6 +13453,24 @@ class GuidedMatchSelect(discord.ui.Select):
             return
 
         match = self.match_map[self.values[0]]
+
+        if is_fut_classic_mode():
+            await interaction.followup.send(
+                "🎮 Modalità FUT attiva: inserisci solo il risultato finale, senza marcatori.",
+                ephemeral=True,
+            )
+            try:
+                # Dopo un defer non si può aprire un modal sulla stessa interazione.
+                # Usiamo un bottone dedicato per aprire correttamente il modal.
+                await interaction.followup.send(
+                    embed=build_fut_result_start_embed(match),
+                    view=FutClassicResultStartView(match),
+                    ephemeral=True,
+                )
+            except Exception as e:
+                print(f"[FUT RESULT START ERROR] {type(e).__name__}: {e}")
+            return
+
         flow = GuidedScorerFlowView(match)
 
         await safe_send(
@@ -13368,7 +13538,7 @@ class GuidedCompetitionView(discord.ui.View):
         options = args[-1]
         self.add_item(GuidedCompetitionSelect(options))
 
-@tree.command(name="risultato", description="Inserisci un risultato guidato: competizione, partita, gol e marcatori")
+@tree.command(name="risultato", description="Inserisci un risultato: con marcatori o solo risultato in FUT")
 async def risultato(interaction: discord.Interaction):
     await safe_defer(interaction, ephemeral=True, thinking=True)
 
